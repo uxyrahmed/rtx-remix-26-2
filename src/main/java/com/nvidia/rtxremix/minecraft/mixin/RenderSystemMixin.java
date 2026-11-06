@@ -20,9 +20,11 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 @Mixin(RenderSystem.class)
 public abstract class RenderSystemMixin {
 
+    // RenderSystem is not obfuscated, so Mojang's mappings have no entry for it.
     @Redirect(
         method = "flipFrame",
-        at = @At(value = "INVOKE", target = "Lorg/lwjgl/glfw/GLFW;glfwSwapBuffers(J)V")
+        at = @At(value = "INVOKE", target = "Lorg/lwjgl/glfw/GLFW;glfwSwapBuffers(J)V"),
+        remap = false
     )
     private static void rtxremix$redirectSwapBuffers(long window) {
         RemixRenderer renderer = RtxRemixMod.renderer;
