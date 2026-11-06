@@ -19,8 +19,10 @@ import com.nvidia.rtxremix.minecraft.asset.RemixMaterial;
 import com.nvidia.rtxremix.minecraft.asset.RemixMaterialStore;
 import com.nvidia.rtxremix.minecraft.asset.RemixTexture;
 import com.nvidia.rtxremix.minecraft.asset.RemixTextureStore;
+import com.nvidia.rtxremix.minecraft.mixin.SpriteAnimatedTextureAccessor;
 import com.nvidia.rtxremix.minecraft.mixin.SpriteAtlasAccessor;
 import com.nvidia.rtxremix.minecraft.mixin.SpriteContentsAccessor;
+import com.nvidia.rtxremix.minecraft.mixin.TextureAtlasSpriteAccessor;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
 import com.nvidia.rtxremix.minecraft.util.DirectBufferPool;
 import org.slf4j.Logger;
@@ -42,7 +44,7 @@ import net.minecraft.client.renderer.texture.SpriteContents;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -56,7 +58,7 @@ import net.minecraft.world.level.block.state.BlockState;
 public class BlockTextureManager {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BlockTextureManager.class);
-    public static final ResourceLocation BLOCK_ATLAS_ID = ResourceLocation.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png");
+    public static final Identifier BLOCK_ATLAS_ID = Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png");
     /** Blend state for draw calls using the atlas cutout material, which sets useDrawCallAlphaState=true. */
     public static final InstanceInfoBlendEXT ATLAS_CUTOUT_BLEND =
             InstanceInfoBlendEXT.textureTimesVertexColorAlphaTest(128);
@@ -91,7 +93,7 @@ public class BlockTextureManager {
     private RemixTexture atlasSssAlbedoTex;
     private int atlasW, atlasH;
     private final List<SpriteEntry> sprites = new ArrayList<>();
-    private final Map<ResourceLocation, SpriteEntry> spriteById = new HashMap<>();
+    private final Map<Identifier, SpriteEntry> spriteById = new HashMap<>();
     private final Map<Long, RemixMaterial> materials = new HashMap<>();
     private final RemixMaterial[] atlasMaterials = new RemixMaterial[LAYER_COUNT];
     private final RemixMaterial[] atlasMaterialsSSS = new RemixMaterial[LAYER_COUNT];
@@ -160,7 +162,7 @@ public class BlockTextureManager {
     /** Per-sprite data: UV bounds (from Minecraft), texture handles, PBR flags. */
     public static final class SpriteEntry {
         public final int index;
-        public final ResourceLocation id;
+        public final Identifier id;
         public final float u0, v0, u1, v1;
         public final boolean hasTransparency;
         final int pixW, pixH, pixX, pixY;
@@ -169,10 +171,10 @@ public class BlockTextureManager {
         public boolean hasPBR, hasSSS;
         float[] lightColor;
 
-        SpriteEntry(int i, ResourceLocation id, TextureAtlasSprite s) {
+        SpriteEntry(int i, Identifier id, TextureAtlasSprite s) {
             this.index = i; this.id = id;
             u0 = s.getU0(); v0 = s.getV0(); u1 = s.getU1(); v1 = s.getV1();
-            pixX = s.getX(); pixY = s.getY();
+            pixX = spriteContentX(s); pixY = spriteContentY(s);
             SpriteContents contents = s.contents();
             pixW = contents.width(); pixH = contents.height();
             transparentPixels = scanTransparency(contents, pixW, pixH);
@@ -213,7 +215,7 @@ public class BlockTextureManager {
             BitSet transparent = null;
             for (int y = 0; y < h; y++)
                 for (int x = 0; x < w; x++)
-                    if (((img.getPixelRGBA(x, y) >> 24) & 0xFF) < 255) {
+                    if (((NativeImagePixels.abgr(img, x, y) >> 24) & 0xFF) < 255) {
                         if (transparent == null) transparent = new BitSet(w * h);
                         transparent.set(y * w + x);
                     }
@@ -296,7 +298,7 @@ public class BlockTextureManager {
     // ====================================================================
 
     private void buildSprites(RemixAPI api, TextureAtlas atlas, LabPBRConverter.VariantCache labPBRVariants) {
-        Map<ResourceLocation, TextureAtlasSprite> map = ((SpriteAtlasAccessor) atlas).getSprites();
+        Map<Identifier, TextureAtlasSprite> map = ((SpriteAtlasAccessor) atlas).getSprites();
         if (map == null) return;
 
         Map<String, Integer> lumMap = buildLuminanceMap();
@@ -354,7 +356,7 @@ public class BlockTextureManager {
     private Map<String, AnimatedSpriteLabPBR> buildAnimatedSpriteLabPBRMap(
             LabPBRConverter.VariantCache labPBRVariants, TextureAtlas atlas) {
         Map<String, AnimatedSpriteLabPBR> result = new HashMap<>();
-        Map<ResourceLocation, TextureAtlasSprite> map = ((SpriteAtlasAccessor) atlas).getSprites();
+        Map<Identifier, TextureAtlasSprite> map = ((SpriteAtlasAccessor) atlas).getSprites();
         if (map == null) return result;
 
         for (var e : map.entrySet()) {
@@ -379,13 +381,14 @@ public class BlockTextureManager {
                 int sH             = (sI != null) ? sI.getHeight()                       : 0;
                 boolean hasPerPixelEmissive = sI != null && LabPBRConverter.hasEmissiveData(sI);
                 boolean hasSss = sI != null && LabPBRConverter.hasSSSData(sI);
-                List<SpriteContents.FrameInfo> frames = animation.frames;
+                List<SpriteContents.FrameInfo> frames =
+                        ((SpriteAnimatedTextureAccessor) animation).getFrames();
                 int[] frameIndices = new int[frames.size()];
                 int[] frameTimes = new int[frames.size()];
                 for (int i = 0; i < frames.size(); i++) {
                     SpriteContents.FrameInfo frame = frames.get(i);
-                    frameIndices[i] = frame.index;
-                    frameTimes[i] = frame.time;
+                    frameIndices[i] = frame.index();
+                    frameTimes[i] = frame.time();
                 }
                 int variantW = (sI != null) ? sW : aoW;
                 int frameColumns = Math.max(1, variantW / Math.max(1, contents.width()));
@@ -960,7 +963,7 @@ public class BlockTextureManager {
             for (BlockState state : block.getStateDefinition().getPossibleStates())
                 maxLum = Math.max(maxLum, state.getLightEmission());
             if (maxLum > 0) {
-                ResourceLocation id = BuiltInRegistries.BLOCK.getKey(block);
+                Identifier id = BuiltInRegistries.BLOCK.getKey(block);
                 map.merge(id.getNamespace() + ":block/" + id.getPath(), maxLum, Math::max);
             }
         }
@@ -1023,37 +1026,62 @@ public class BlockTextureManager {
         }
     }
 
-    /** Reads per-sprite NativeImages and stitches into an RGBA byte[] atlas buffer. */
+    /**
+     * Reads per-sprite NativeImages and stitches into an RGBA byte[] atlas buffer laid
+     * out like the GPU atlas: each sprite's first frame at its content origin, with the
+     * edge texels repeated across the slot's padding as vanilla's clamped sprite blit
+     * fills it.
+     */
     public static byte[] stitchAtlasRGBA(TextureAtlas atlas) {
         SpriteAtlasAccessor acc = (SpriteAtlasAccessor) atlas;
-        int w = acc.getWidth(), h = acc.getHeight();
+        int w = acc.getAtlasWidth(), h = acc.getAtlasHeight();
         byte[] buf = new byte[w * h * 4];
         for (TextureAtlasSprite sprite : acc.getSprites().values()) {
             NativeImage img = ((SpriteContentsAccessor) sprite.contents()).getImage();
             if (img == null) continue;
-            int sx = sprite.getX(), sy = sprite.getY();
+            int pad = ((TextureAtlasSpriteAccessor) sprite).getPadding();
+            int sx = sprite.getX() + pad, sy = sprite.getY() + pad;
             int sw = sprite.contents().width(), sh = sprite.contents().height();
-            for (int y = 0; y < sh; y++)
-                for (int x = 0; x < sw; x++) {
-                    int abgr = img.getPixelRGBA(x, y);
-                    int idx = ((sy + y) * w + (sx + x)) * 4;
+            for (int y = -pad; y < sh + pad; y++) {
+                int ay = sy + y;
+                if (ay < 0 || ay >= h) continue;
+                int srcY = Math.max(0, Math.min(sh - 1, y));
+                for (int x = -pad; x < sw + pad; x++) {
+                    int ax = sx + x;
+                    if (ax < 0 || ax >= w) continue;
+                    int abgr = NativeImagePixels.abgr(img, Math.max(0, Math.min(sw - 1, x)), srcY);
+                    int idx = (ay * w + ax) * 4;
                     buf[idx]     = (byte) (abgr & 0xFF);
                     buf[idx + 1] = (byte) ((abgr >> 8) & 0xFF);
                     buf[idx + 2] = (byte) ((abgr >> 16) & 0xFF);
                     buf[idx + 3] = (byte) ((abgr >> 24) & 0xFF);
                 }
+            }
         }
         return buf;
     }
 
     /** Returns the atlas width, or 0 if not initialized. */
     public static int atlasWidth(TextureAtlas atlas) {
-        return ((SpriteAtlasAccessor) atlas).getWidth();
+        return ((SpriteAtlasAccessor) atlas).getAtlasWidth();
     }
 
     /** Returns the atlas height, or 0 if not initialized. */
     public static int atlasHeight(TextureAtlas atlas) {
-        return ((SpriteAtlasAccessor) atlas).getHeight();
+        return ((SpriteAtlasAccessor) atlas).getAtlasHeight();
+    }
+
+    /**
+     * Atlas column of the sprite's first content texel, the one its {@code getU0()}
+     * addresses. Its slot, at {@code getX()}, starts the sprite's padding earlier.
+     */
+    public static int spriteContentX(TextureAtlasSprite sprite) {
+        return sprite.getX() + ((TextureAtlasSpriteAccessor) sprite).getPadding();
+    }
+
+    /** Atlas row of the sprite's first content texel; see {@link #spriteContentX}. */
+    public static int spriteContentY(TextureAtlasSprite sprite) {
+        return sprite.getY() + ((TextureAtlasSpriteAccessor) sprite).getPadding();
     }
 
     // ====================================================================
@@ -1061,7 +1089,7 @@ public class BlockTextureManager {
     // ====================================================================
 
     /** Finds a sprite by its content identifier (O(1) HashMap lookup). */
-    public SpriteEntry getSpriteById(ResourceLocation id) {
+    public SpriteEntry getSpriteById(Identifier id) {
         return spriteById.get(id);
     }
 
@@ -1230,7 +1258,7 @@ public class BlockTextureManager {
      * 3. Warm white fallback
      */
     public float[] getLightColorForBlock(Block block) {
-        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(block);
+        Identifier id = BuiltInRegistries.BLOCK.getKey(block);
         String path = id.getPath();
 
         float[] known = KNOWN_LIGHT_COLORS.get(path);

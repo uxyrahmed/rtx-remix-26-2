@@ -4,11 +4,15 @@
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
+import com.nvidia.rtxremix.minecraft.RtxRemixMod;
 import com.nvidia.rtxremix.minecraft.profiling.ParticleTickProfiler;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
-import net.minecraft.client.particle.Particle;
+import net.minecraft.client.Camera;
 import net.minecraft.client.particle.ParticleEngine;
+import net.minecraft.client.particle.ParticleGroup;
 import net.minecraft.client.particle.ParticleRenderType;
+import net.minecraft.client.renderer.culling.Frustum;
+import net.minecraft.client.renderer.state.level.ParticlesRenderState;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -16,34 +20,34 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.Collection;
 import java.util.Map;
-import java.util.Queue;
 
 /**
- * Coarse particle ticking markers. These intentionally avoid per-particle
- * zones because the benchmark scene can tick thousands of particles per frame.
+ * Coarse particle ticking markers, and the switch that hands particle drawing
+ * to Remix. The markers intentionally avoid per-particle zones because the
+ * benchmark scene can tick thousands of particles per frame; the per-group
+ * zone is {@code ParticleGroupMixin}.
  */
 @Mixin(ParticleEngine.class)
 public abstract class ParticleManagerMixin {
-    @Shadow @Final private Map<ParticleRenderType, Queue<Particle>> particles;
+    @Shadow @Final private Map<ParticleRenderType, ParticleGroup<?>> particles;
 
     private static final ThreadLocal<ProfileScope> rtxremix$tickScope = new ThreadLocal<>();
-    private static final ThreadLocal<ProfileScope> rtxremix$sheetScope = new ThreadLocal<>();
 
     @Inject(method = "tick", at = @At("HEAD"), require = 0)
     private void rtxremix$tickHead(CallbackInfo ci) {
         ParticleTickProfiler.beginTick();
         int activeParticles = 0;
-        int activeSheets = 0;
-        for (Queue<Particle> queue : particles.values()) {
-            int size = queue.size();
+        int activeGroups = 0;
+        for (ParticleGroup<?> group : particles.values()) {
+            int size = group.size();
             activeParticles += size;
-            if (size > 0) activeSheets++;
+            if (size > 0) activeGroups++;
         }
-        rtxremix$openScope(rtxremix$tickScope, ProfileScope.beginJfrOnly("ParticleManager.tick")
+        rtxremix$closeScope();
+        rtxremix$tickScope.set(ProfileScope.beginJfrOnly("ParticleManager.tick")
                 .captureCount(activeParticles)
-                .layerCount(activeSheets)
+                .layerCount(activeGroups)
                 .plotOnClose("Java.ParticleManager.tick.ms"));
     }
 
@@ -59,31 +63,32 @@ public abstract class ParticleManagerMixin {
             ProfileScope.plot("Java.ParticleManager.collisionSkips", stats.skippedCollisionChecks());
             ProfileScope.plot("Java.ParticleManager.collisionMs", stats.collisionNanos() / 1_000_000.0);
         }
-        rtxremix$closeScope(rtxremix$sheetScope);
-        rtxremix$closeScope(rtxremix$tickScope);
+        rtxremix$closeScope();
     }
 
-    @Inject(method = "tickParticleList", at = @At("HEAD"), require = 0)
-    private void rtxremix$tickParticlesHead(Collection<Particle> particles, CallbackInfo ci) {
-        rtxremix$openScope(rtxremix$sheetScope, ProfileScope.beginJfrOnly("ParticleManager.tickParticles")
-                .captureCount(particles.size())
-                .plotOnClose("Java.ParticleManager.tickParticles.ms"));
+    /**
+     * Remix draws particles from its own capture of the live groups
+     * ({@code RemixParticleRenderer}), so vanilla's per-frame extraction, and
+     * with it every particle submit that would follow, is skipped while Remix
+     * draws the world. Extraction only fills the level render state, which the
+     * level render resets every frame, so skipping it changes no other state.
+     */
+    @Inject(method = "extract", at = @At("HEAD"), cancellable = true)
+    private void rtxremix$skipVanillaParticleExtraction(
+            ParticlesRenderState particlesRenderState,
+            Frustum frustum,
+            Camera camera,
+            float partialTickTime,
+            CallbackInfo ci) {
+        if (RtxRemixMod.isRemixWorldRendering()) {
+            ci.cancel();
+        }
     }
 
-    @Inject(method = "tickParticleList", at = @At("RETURN"), require = 0)
-    private void rtxremix$tickParticlesReturn(Collection<Particle> particles, CallbackInfo ci) {
-        rtxremix$closeScope(rtxremix$sheetScope);
-    }
-
-    private static void rtxremix$openScope(ThreadLocal<ProfileScope> holder, ProfileScope scope) {
-        rtxremix$closeScope(holder);
-        holder.set(scope);
-    }
-
-    private static void rtxremix$closeScope(ThreadLocal<ProfileScope> holder) {
-        ProfileScope scope = holder.get();
+    private static void rtxremix$closeScope() {
+        ProfileScope scope = rtxremix$tickScope.get();
         if (scope != null) {
-            holder.remove();
+            rtxremix$tickScope.remove();
             scope.close();
         }
     }

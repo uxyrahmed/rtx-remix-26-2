@@ -4,18 +4,37 @@
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
+import com.mojang.blaze3d.opengl.GlBackend;
+import com.mojang.blaze3d.systems.GpuBackend;
+import com.mojang.blaze3d.vulkan.VulkanBackend;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.PreferredGraphicsApi;
 import net.minecraft.util.thread.BlockableEventLoop;
 import com.nvidia.rtxremix.minecraft.RemixRenderer;
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.slf4j.LoggerFactory;
+
+import java.nio.file.Files;
 
 /**
- * Hooks into MinecraftClient lifecycle events.
+ * Hooks into the Minecraft client's frame and tick.
+ *
+ * <p>Since 26.1 a frame is {@code runTick} (tasks, client ticks, sound, mouse)
+ * followed by {@code renderFrame}: {@code GameRenderer.update} moves the camera,
+ * {@code GameRenderer.extract} copies the world into render states,
+ * {@code GameRenderer.render} draws, then the window surface blits and presents.
+ * Most hooks here only partition that frame into profiling phases; their names
+ * are the ones 1.21.1 used, because the profiling tools match on them. The
+ * functional hooks are the camera-path pose application before the camera
+ * moves, the Remix present fallback, the OpenGL backend preference, and the
+ * frame end the benchmark controller times.
  */
 @Mixin(Minecraft.class)
 public abstract class MinecraftClientMixin {
@@ -32,8 +51,36 @@ public abstract class MinecraftClientMixin {
     private static final ThreadLocal<ProfileScope> rtxremix$blitScope = new ThreadLocal<>();
     private static final ThreadLocal<Long> rtxremix$renderStartNanos = new ThreadLocal<>();
 
+    /**
+     * Tries the OpenGL backend first whenever the Remix runtime is installed.
+     * 26.2 can render through Vulkan when the player picks it in Video
+     * Settings, but the Remix composite imports Remix's images into OpenGL,
+     * so a Vulkan session could never show the path-traced image. Without the
+     * runtime, the player's choice stands.
+     */
+    @Redirect(
+        method = "<init>",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/PreferredGraphicsApi;getBackendsToTry()[Lcom/mojang/blaze3d/systems/GpuBackend;"
+        )
+    )
+    private GpuBackend[] rtxremix$preferOpenGlForRemix(PreferredGraphicsApi preferred) {
+        if (!Files.isRegularFile(RemixRenderer.runtimeDll(FabricLoader.getInstance().getGameDir()))) {
+            return preferred.getBackendsToTry();
+        }
+        if (preferred == PreferredGraphicsApi.VULKAN) {
+            // Own logger: this runs while Minecraft is constructed, before the
+            // client entrypoint, so it touches no mod state.
+            LoggerFactory.getLogger("rtx-remix-renderer").warn(
+                    "RTX Remix composites through OpenGL, so the OpenGL backend is tried "
+                    + "before the Vulkan one the graphics API option asks for");
+        }
+        return new GpuBackend[]{new GlBackend(), new VulkanBackend()};
+    }
+
     @Inject(method = "runTick", at = @At("HEAD"))
-    private void rtxremix$renderHead(boolean tick, CallbackInfo ci) {
+    private void rtxremix$renderHead(boolean advanceGameTime, CallbackInfo ci) {
         ProfileScope.beginFrame();
         rtxremix$renderStartNanos.set(System.nanoTime());
         rtxremix$openRenderScope();
@@ -45,11 +92,11 @@ public abstract class MinecraftClientMixin {
         method = "runTick",
         at = @At(
             value = "INVOKE",
-            target = "Lnet/minecraft/client/DeltaTracker$Timer;advanceTime(JZ)I"
+            target = "Lnet/minecraft/client/DeltaTracker$Timer;advanceGameTime(J)I"
         ),
         require = 0
     )
-    private void rtxremix$beforeBeginRenderTick(boolean tick, CallbackInfo ci) {
+    private void rtxremix$beforeBeginRenderTick(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$closeScope(rtxremix$preGamePrepScope);
         rtxremix$openScope(rtxremix$beginRenderTickScope, "MinecraftClient.render.beginRenderTick");
     }
@@ -58,12 +105,12 @@ public abstract class MinecraftClientMixin {
         method = "runTick",
         at = @At(
             value = "INVOKE",
-            target = "Lnet/minecraft/client/DeltaTracker$Timer;advanceTime(JZ)I",
+            target = "Lnet/minecraft/client/DeltaTracker$Timer;advanceGameTime(J)I",
             shift = At.Shift.AFTER
         ),
         require = 0
     )
-    private void rtxremix$afterBeginRenderTick(boolean tick, CallbackInfo ci) {
+    private void rtxremix$afterBeginRenderTick(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$closeScope(rtxremix$beginRenderTickScope);
     }
 
@@ -75,7 +122,7 @@ public abstract class MinecraftClientMixin {
         ),
         require = 0
     )
-    private void rtxremix$beforeRunTasks(boolean tick, CallbackInfo ci) {
+    private void rtxremix$beforeRunTasks(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$closeScope(rtxremix$preGamePrepScope);
         rtxremix$closeScope(rtxremix$beginRenderTickScope);
         ProfileScope.beginClientTaskDrain("MinecraftClient", rtxremix$getTaskCount());
@@ -91,9 +138,36 @@ public abstract class MinecraftClientMixin {
         ),
         require = 0
     )
-    private void rtxremix$afterRunTasks(boolean tick, CallbackInfo ci) {
+    private void rtxremix$afterRunTasks(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$closeScope(rtxremix$scheduledTasksScope);
         rtxremix$closeClientTaskDrain();
+    }
+
+    // The texture tick moved from the client tick into runTick in 26.1. It keeps
+    // its tick-phase name so recordings stay comparable.
+    @Inject(
+        method = "runTick",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/texture/TextureManager;tick()V"
+        ),
+        require = 0
+    )
+    private void rtxremix$beforeTextureTick(boolean advanceGameTime, CallbackInfo ci) {
+        rtxremix$openTickPhase("MinecraftClient.tick.textures");
+    }
+
+    @Inject(
+        method = "runTick",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/texture/TextureManager;tick()V",
+            shift = At.Shift.AFTER
+        ),
+        require = 0
+    )
+    private void rtxremix$afterTextureTick(boolean advanceGameTime, CallbackInfo ci) {
+        rtxremix$closeTickPhase();
     }
 
     @Inject(
@@ -104,7 +178,7 @@ public abstract class MinecraftClientMixin {
         ),
         require = 0
     )
-    private void rtxremix$beforeSoundListener(boolean tick, CallbackInfo ci) {
+    private void rtxremix$beforeSoundListener(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$closeScope(rtxremix$preGamePrepScope);
         rtxremix$closeScope(rtxremix$beginRenderTickScope);
         rtxremix$closeScope(rtxremix$scheduledTasksScope);
@@ -121,25 +195,8 @@ public abstract class MinecraftClientMixin {
         ),
         require = 0
     )
-    private void rtxremix$afterSoundListener(boolean tick, CallbackInfo ci) {
+    private void rtxremix$afterSoundListener(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$closeScope(rtxremix$soundScope);
-    }
-
-    @Inject(
-        method = "runTick",
-        at = @At(
-            value = "INVOKE",
-            target = "Lcom/mojang/blaze3d/systems/RenderSystem;clear(IZ)V"
-        ),
-        require = 0
-    )
-    private void rtxremix$beforeDisplayPrep(boolean tick, CallbackInfo ci) {
-        rtxremix$closeScope(rtxremix$preGamePrepScope);
-        rtxremix$closeScope(rtxremix$beginRenderTickScope);
-        rtxremix$closeScope(rtxremix$scheduledTasksScope);
-        rtxremix$closeClientTaskDrain();
-        rtxremix$closeScope(rtxremix$soundScope);
-        rtxremix$openScope(rtxremix$displayPrepScope, "MinecraftClient.render.displayPrep");
     }
 
     @Inject(
@@ -150,7 +207,7 @@ public abstract class MinecraftClientMixin {
         ),
         require = 0
     )
-    private void rtxremix$beforeMouseTick(boolean tick, CallbackInfo ci) {
+    private void rtxremix$beforeMouseTick(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$openScope(rtxremix$mouseScope, "MinecraftClient.render.mouseTick");
     }
 
@@ -163,18 +220,49 @@ public abstract class MinecraftClientMixin {
         ),
         require = 0
     )
-    private void rtxremix$afterMouseTick(boolean tick, CallbackInfo ci) {
+    private void rtxremix$afterMouseTick(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$closeScope(rtxremix$mouseScope);
     }
 
+    /** Window and surface upkeep, extraction, and everything else before drawing. */
+    @Inject(method = "renderFrame", at = @At("HEAD"))
+    private void rtxremix$beforeDisplayPrep(boolean advanceGameTime, CallbackInfo ci) {
+        rtxremix$closeScope(rtxremix$preGamePrepScope);
+        rtxremix$closeScope(rtxremix$beginRenderTickScope);
+        rtxremix$closeScope(rtxremix$scheduledTasksScope);
+        rtxremix$closeClientTaskDrain();
+        rtxremix$closeScope(rtxremix$soundScope);
+        rtxremix$closeScope(rtxremix$mouseScope);
+        rtxremix$openScope(rtxremix$displayPrepScope, "MinecraftClient.render.displayPrep");
+    }
+
+    /**
+     * Applies interactive or benchmark camera poses before {@code GameRenderer.update}
+     * moves Minecraft's camera for this frame, so the pick, the extracted camera state
+     * and the Remix camera all see the pose.
+     */
     @Inject(
-        method = "runTick",
+        method = "renderFrame",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/GameRenderer;update(Lnet/minecraft/client/DeltaTracker;)V"
+        )
+    )
+    private void rtxremix$beforeCameraUpdate(boolean advanceGameTime, CallbackInfo ci) {
+        RemixRenderer renderer = RtxRemixMod.renderer;
+        if (renderer != null) {
+            renderer.onMinecraftWorldRenderFrameStart((Minecraft) (Object) this, advanceGameTime);
+        }
+    }
+
+    @Inject(
+        method = "renderFrame",
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/client/renderer/GameRenderer;render(Lnet/minecraft/client/DeltaTracker;Z)V"
         )
     )
-    private void rtxremix$beforeGameRenderer(boolean tick, CallbackInfo ci) {
+    private void rtxremix$beforeGameRenderer(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$closeScope(rtxremix$preGamePrepScope);
         rtxremix$closeScope(rtxremix$beginRenderTickScope);
         rtxremix$closeScope(rtxremix$scheduledTasksScope);
@@ -183,134 +271,127 @@ public abstract class MinecraftClientMixin {
         rtxremix$closeScope(rtxremix$mouseScope);
         rtxremix$closeScope(rtxremix$displayPrepScope);
         rtxremix$transitionRenderPhase("MinecraftClient.render.gameRenderer");
-
-        // Apply interactive or benchmark camera poses before GameRenderer.renderWorld
-        // constructs Minecraft's interpolated Camera for this frame.
-        RemixRenderer renderer = RtxRemixMod.renderer;
-        if (renderer != null) {
-            renderer.onMinecraftWorldRenderFrameStart((Minecraft) (Object) this, tick);
-        }
     }
 
     @Inject(
-        method = "runTick",
+        method = "renderFrame",
         at = @At(
             value = "INVOKE",
             target = "Lnet/minecraft/client/renderer/GameRenderer;render(Lnet/minecraft/client/DeltaTracker;Z)V",
             shift = At.Shift.AFTER
         )
     )
-    private void rtxremix$afterGameRenderer(boolean tick, CallbackInfo ci) {
+    private void rtxremix$afterGameRenderer(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$transitionRenderPhase("MinecraftClient.render.postGameRenderer");
     }
 
     @Inject(
-        method = "runTick",
+        method = "renderFrame",
         at = @At(
             value = "INVOKE",
-            target = "Lcom/mojang/blaze3d/pipeline/RenderTarget;unbindWrite()V"
+            target = "Lcom/mojang/blaze3d/systems/GpuSurface;blitFromTexture(Lcom/mojang/blaze3d/systems/CommandEncoder;Lcom/mojang/blaze3d/textures/GpuTextureView;)V"
         ),
         require = 0
     )
-    private void rtxremix$beforeBlit(boolean tick, CallbackInfo ci) {
-        rtxremix$closeScope(rtxremix$preGamePrepScope);
-        rtxremix$closeScope(rtxremix$beginRenderTickScope);
-        rtxremix$closeScope(rtxremix$scheduledTasksScope);
-        rtxremix$closeClientTaskDrain();
-        rtxremix$closeScope(rtxremix$soundScope);
-        rtxremix$closeScope(rtxremix$displayPrepScope);
-        rtxremix$closeScope(rtxremix$mouseScope);
+    private void rtxremix$beforeBlit(boolean advanceGameTime, CallbackInfo ci) {
+        rtxremix$closeRenderChildScopes();
         rtxremix$openScope(rtxremix$blitScope, "MinecraftClient.render.blitFramebuffer");
     }
 
     @Inject(
-        method = "runTick",
+        method = "renderFrame",
         at = @At(
             value = "INVOKE",
-            target = "Lcom/mojang/blaze3d/pipeline/RenderTarget;blitToScreen(II)V",
+            target = "Lcom/mojang/blaze3d/systems/GpuSurface;blitFromTexture(Lcom/mojang/blaze3d/systems/CommandEncoder;Lcom/mojang/blaze3d/textures/GpuTextureView;)V",
             shift = At.Shift.AFTER
         ),
         require = 0
     )
-    private void rtxremix$afterBlit(boolean tick, CallbackInfo ci) {
+    private void rtxremix$afterBlit(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$closeScope(rtxremix$blitScope);
     }
 
     @Inject(
-        method = "runTick",
+        method = "renderFrame",
         at = @At(
             value = "INVOKE",
-            target = "Lcom/mojang/blaze3d/platform/Window;updateDisplay()V"
+            target = "Lcom/mojang/blaze3d/systems/GpuSurface;present()V"
         )
     )
-    private void rtxremix$beforeSwapBuffers(boolean tick, CallbackInfo ci) {
+    private void rtxremix$beforeSwapBuffers(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$transitionRenderPhase("MinecraftClient.render.swapBuffers");
     }
 
     @Inject(
-        method = "runTick",
+        method = "renderFrame",
         at = @At(
             value = "INVOKE",
-            target = "Lcom/mojang/blaze3d/platform/Window;updateDisplay()V",
+            target = "Lcom/mojang/blaze3d/systems/GpuSurface;present()V",
             shift = At.Shift.AFTER
         )
     )
-    private void rtxremix$afterSwapBuffers(boolean tick, CallbackInfo ci) {
+    private void rtxremix$afterSwapBuffers(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$transitionRenderPhase("MinecraftClient.render.frameLimit");
     }
 
+    /**
+     * Presents through Remix on frames where the window surface did not present.
+     * Since 26.2 Minecraft skips the present while the window is minimized or its
+     * surface could not be configured, but Remix owns the swapchain whenever the
+     * renderer is initialized and every Remix submit is followed by a present, as
+     * 1.21.1's unconditional buffer swap guaranteed.
+     */
     @Inject(
-        method = "runTick",
+        method = "renderFrame",
         at = @At(
             value = "INVOKE",
-            target = "Lcom/mojang/blaze3d/systems/RenderSystem;limitDisplayFPS(I)V"
+            target = "Lnet/minecraft/client/renderer/LevelRenderer;endFrame()V"
+        )
+    )
+    private void rtxremix$presentSkippedFrameThroughRemix(boolean advanceGameTime, CallbackInfo ci) {
+        RemixRenderer renderer = RtxRemixMod.renderer;
+        if (renderer != null) {
+            renderer.finishFramePresentation();
+        }
+    }
+
+    @Inject(
+        method = "renderFrame",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/FramerateLimiter;limitDisplayFPS(I)V"
         ),
         require = 0
     )
-    private void rtxremix$beforeLimitDisplayFps(boolean tick, CallbackInfo ci) {
+    private void rtxremix$beforeLimitDisplayFps(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$transitionRenderPhase("MinecraftClient.render.limitDisplayFPS");
     }
 
     @Inject(
-        method = "runTick",
+        method = "renderFrame",
         at = @At(
             value = "INVOKE",
-            target = "Lcom/mojang/blaze3d/systems/RenderSystem;limitDisplayFPS(I)V",
+            target = "Lnet/minecraft/client/FramerateLimiter;limitDisplayFPS(I)V",
             shift = At.Shift.AFTER
         ),
         require = 0
     )
-    private void rtxremix$afterLimitDisplayFps(boolean tick, CallbackInfo ci) {
+    private void rtxremix$afterLimitDisplayFps(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$transitionRenderPhase("MinecraftClient.render.afterFrameLimit");
     }
 
-    @Inject(
-        method = "runTick",
-        at = @At(
-            value = "INVOKE",
-            target = "Ljava/lang/Thread;yield()V"
-        )
-    )
-    private void rtxremix$beforeYield(boolean tick, CallbackInfo ci) {
-        rtxremix$transitionRenderPhase("MinecraftClient.render.yield");
-    }
-
-    @Inject(
-        method = "runTick",
-        at = @At(
-            value = "INVOKE",
-            target = "Ljava/lang/Thread;yield()V",
-            shift = At.Shift.AFTER
-        )
-    )
-    private void rtxremix$afterYield(boolean tick, CallbackInfo ci) {
+    // 1.21.1 began this phase after the loop's Thread.yield, which 26.1 dropped.
+    // The rest of the frame, the frame counter and runTick's pause bookkeeping, is
+    // what it covered.
+    @Inject(method = "renderFrame", at = @At("RETURN"))
+    private void rtxremix$afterRenderFrame(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$transitionRenderPhase("MinecraftClient.render.postFrame");
     }
 
     // Tracy frames come from the runtime's FrameMark inside Present; a second
     // mark here would split every frame at the present boundary.
     @Inject(method = "runTick", at = @At("RETURN"))
-    private void rtxremix$renderReturn(boolean tick, CallbackInfo ci) {
+    private void rtxremix$renderReturn(boolean advanceGameTime, CallbackInfo ci) {
         rtxremix$closeRenderChildScopes();
         rtxremix$closeRenderPhase();
         rtxremix$closeRenderScope();
@@ -338,7 +419,7 @@ public abstract class MinecraftClientMixin {
         method = "tick",
         at = @At(
             value = "INVOKE",
-            target = "Lnet/minecraft/client/gui/Gui;tick(Z)V"
+            target = "Lnet/minecraft/client/gui/Gui;tick()V"
         ),
         require = 0
     )
@@ -350,7 +431,7 @@ public abstract class MinecraftClientMixin {
         method = "tick",
         at = @At(
             value = "INVOKE",
-            target = "Lnet/minecraft/client/gui/Gui;tick(Z)V",
+            target = "Lnet/minecraft/client/gui/Gui;tick()V",
             shift = At.Shift.AFTER
         ),
         require = 0
@@ -363,7 +444,7 @@ public abstract class MinecraftClientMixin {
         method = "tick",
         at = @At(
             value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/GameRenderer;pick(F)V"
+            target = "Lnet/minecraft/client/Minecraft;pick(F)V"
         ),
         require = 0
     )
@@ -375,7 +456,7 @@ public abstract class MinecraftClientMixin {
         method = "tick",
         at = @At(
             value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/GameRenderer;pick(F)V",
+            target = "Lnet/minecraft/client/Minecraft;pick(F)V",
             shift = At.Shift.AFTER
         ),
         require = 0
@@ -406,31 +487,6 @@ public abstract class MinecraftClientMixin {
         require = 0
     )
     private void rtxremix$afterInteractionTick(CallbackInfo ci) {
-        rtxremix$closeTickPhase();
-    }
-
-    @Inject(
-        method = "tick",
-        at = @At(
-            value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/texture/TextureManager;tick()V"
-        ),
-        require = 0
-    )
-    private void rtxremix$beforeTextureTick(CallbackInfo ci) {
-        rtxremix$openTickPhase("MinecraftClient.tick.textures");
-    }
-
-    @Inject(
-        method = "tick",
-        at = @At(
-            value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/texture/TextureManager;tick()V",
-            shift = At.Shift.AFTER
-        ),
-        require = 0
-    )
-    private void rtxremix$afterTextureTick(CallbackInfo ci) {
         rtxremix$closeTickPhase();
     }
 
@@ -484,30 +540,8 @@ public abstract class MinecraftClientMixin {
         rtxremix$closeTickPhase();
     }
 
-    @Inject(
-        method = "tick",
-        at = @At(
-            value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/LevelRenderer;tick()V"
-        ),
-        require = 0
-    )
-    private void rtxremix$beforeWorldRendererTick(CallbackInfo ci) {
-        rtxremix$openTickPhase("MinecraftClient.tick.worldRenderer");
-    }
-
-    @Inject(
-        method = "tick",
-        at = @At(
-            value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/LevelRenderer;tick()V",
-            shift = At.Shift.AFTER
-        ),
-        require = 0
-    )
-    private void rtxremix$afterWorldRendererTick(CallbackInfo ci) {
-        rtxremix$closeTickPhase();
-    }
+    // 1.21.1 also timed LevelRenderer.tick here; 26.1 removed that call from the
+    // client tick, so the phase is gone rather than renamed.
 
     @Inject(
         method = "tick",
@@ -673,7 +707,7 @@ public abstract class MinecraftClientMixin {
     private void rtxremix$closeTail(CallbackInfo ci) {
         RtxRemixMod.shutdownAfterMinecraftClose();
     }
-    
+
     private static void rtxremix$transitionRenderPhase(String phaseName) {
         rtxremix$closeRenderPhase();
         // The phases partition MinecraftClient.render into consecutive spans that

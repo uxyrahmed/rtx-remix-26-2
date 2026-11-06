@@ -4,35 +4,31 @@
  */
 package com.nvidia.rtxremix.minecraft.terrain.visibility;
 
+import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
+import org.jspecify.annotations.Nullable;
+
+import java.util.function.Consumer;
+
 /**
- * Section-addressed access to the built-chunk slots owned by BuiltChunkStorage.
+ * Section-addressed access to the render section slots owned by the view area.
+ *
+ * <p>The view area keeps one slot per section of the window around the camera and gives a
+ * slot the section at its window position whenever the camera moves, so the slot a section
+ * coordinate maps to holds that section exactly while the section is inside the window.
+ * Render thread only, as the view area itself.
  */
 public interface BuiltChunkStorageSectionAccess {
 
-    /**
-     * Flags a section for rebuild only if its slot still holds it. Vanilla's
-     * scheduleRebuild aliases every section coordinate onto a slot and flags
-     * whatever section is resident, so a section that has left the window
-     * would trigger a spurious rebuild of an unrelated one.
-     */
-    void rtxremix$scheduleRebuildIfResident(int cx, int sy, int cz);
+    /** The slot holding section (cx, sy, cz), or null when the section is outside the window. */
+    SectionRenderDispatcher.@Nullable RenderSection rtxremix$residentSection(int cx, int sy, int cz);
 
-    /**
-     * Applies one chunk-load or light-data re-flag request for a section, vanilla's
-     * WorldRenderer.scheduleBlockRenders(III), under the Remix capture rule. The
-     * section's own slot is flagged as vanilla flags it. Each of the eight horizontal
-     * neighbour slots at the same section Y is flagged only if it holds that section,
-     * has no rebuild pending, and its last region snapshot did not contain the loading
-     * column. Vertical neighbours are not visited because every section Y of a loading
-     * column receives its own request. A section Y without a slot of its own is ignored
-     * rather than aliased onto the far slot. Render thread only.
-     */
-    void rtxremix$flagLoadedSection(int cx, int sy, int cz);
+    /** Visits every slot of the window. */
+    void rtxremix$forEachSection(Consumer<SectionRenderDispatcher.RenderSection> action);
 
     /**
      * Clears the bit for column (cx, cz) in every resident slot of its eight neighbour
      * columns after the column unloaded or before it is reloaded in place, so the next
-     * load of that column re-flags them. Render thread only.
+     * load of that column re-flags them.
      */
     void rtxremix$clearNeighbourSnapshotBits(int cx, int cz);
 }

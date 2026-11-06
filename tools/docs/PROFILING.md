@@ -346,9 +346,12 @@ The selected runtime's `dxvk_imgui.cpp` and `dxvk_memory_tracker.cpp` are the
 authorities for those counters and controls. Growth in the heap readout with
 flat tracked Remix resources suggests allocations outside that profiler;
 correlate it with GL work rather than declaring the owner from one graph.
-`DynamicBufferUpload` documents a known GL buffer-orphaning mechanism and the
-reuse policy that prevents it. Growth that scales with draw calls/frame rate,
-especially with the debug chart open, warrants checking that path again.
+On 1.21.1 the mod stopped vanilla's dynamic vertex buffers from being
+re-specified with `glBufferData` on every upload, because under the GL and
+Vulkan interop the driver never reclaimed the orphaned storage. 26.2 specifies
+a buffer's storage once, when it creates the buffer, so that workaround is
+gone. Growth that scales with draw calls/frame rate, especially with the debug
+chart open, warrants checking for buffer churn again.
 
 Java RSS growth is a separate question. Use `jfr_gc --heap --rss` and a
 controlled `jcmd <pid> GC.run` outside measured runs to compare the live set

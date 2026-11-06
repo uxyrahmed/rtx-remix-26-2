@@ -4,11 +4,15 @@
  */
 package com.nvidia.rtxremix.minecraft.texture;
 
+import com.mojang.blaze3d.platform.NativeImage;
 import com.nvidia.rtxremix.RemixAPI;
 import com.nvidia.rtxremix.TextureBatchEntry;
 import com.nvidia.rtxremix.TextureFormat;
 import com.nvidia.rtxremix.TexturePatch;
 import com.nvidia.rtxremix.TexturePatchInfo;
+import com.nvidia.rtxremix.minecraft.mixin.SpriteAnimatedTextureAccessor;
+import com.nvidia.rtxremix.minecraft.mixin.SpriteAnimationStateAccessor;
+import com.nvidia.rtxremix.minecraft.mixin.SpriteContentsAccessor;
 import com.nvidia.rtxremix.minecraft.util.DirectBufferPool;
 import org.lwjgl.system.MemoryUtil;
 import org.slf4j.Logger;
@@ -20,11 +24,20 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.client.renderer.texture.SpriteContents;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.resources.Identifier;
 
 /**
- * Collects animated sprite upload patches each tick and flushes them to Remix
+ * Collects animated sprite patches each tick and flushes them to Remix
  * in a single batched call before present.
+ *
+ * <p>Vanilla animates atlas sprites on the GPU and never uploads a frame from the
+ * CPU, so each tick {@code SpriteAtlasTextureMixin} hands over every advanced
+ * animation state and this forwarder rebuilds what the GPU draws: a frame that
+ * changed is a patch straight out of the sprite's sheet image, and an
+ * interpolating sprite between frame changes is blended into a per-sprite image
+ * here, as the interpolation shader blends it.
  *
  * <p>LabPBR-aware: sprites that have {@code _n} / {@code _s} siblings are
  * re-processed on every animation frame so AO (from {@code _n.b}) and the
@@ -50,10 +63,16 @@ public final class AtlasAnimationForwarder {
 
     private static Thread expectedThread;
     private static final List<PatchRecord> pendingPatches = new ArrayList<>();
-    private static final Map<ResourceLocation, AnimationPlayback> animationStates = new HashMap<>();
+    private static final Map<Identifier, AnimationPlayback> animationStates = new HashMap<>();
+    /**
+     * Blended frame of each interpolating sprite, rewritten on every tick between
+     * frame changes. A pending patch points into it, so an image lives until the
+     * forwarder is cleared or paused, which also drops every patch.
+     */
+    private static final Map<Identifier, NativeImage> interpolatedFrames = new HashMap<>();
     private static Map<String, BlockTextureManager.AnimatedSpriteLabPBR> labPBRMap;
-    private static Set<ResourceLocation> blockAtlasSpriteIds;
-    private static final ThreadLocal<ResourceLocation> currentAtlasId = new ThreadLocal<>();
+    private static Set<Identifier> blockAtlasSpriteIds;
+    private static final ThreadLocal<Identifier> currentAtlasId = new ThreadLocal<>();
 
     // Reusable scratch between CPU-side patch composition and the final
     // DirectBuffer copy. Pre-sized for a typical 64x64 RGBA sprite so the
@@ -64,7 +83,7 @@ public final class AtlasAnimationForwarder {
     private static byte[] scratch = new byte[kInitialScratchBytes];
 
     private static final class PatchRecord {
-        final ResourceLocation id;
+        final Identifier id;
         final int dstX;
         final int dstY;
         final int srcX;
@@ -74,11 +93,12 @@ public final class AtlasAnimationForwarder {
         final int srcImageWidth;
         final int srcImageHeight;
         /**
-         * Raw pointer into the owning NativeImage's mip-0 backing memory.
+         * Raw pointer into the sprite's sheet image or its interpolated frame.
          * Read-only and valid only until flush() is called on the same
          * render-thread frame that produced this record:
          *   1. The owning SpriteContents must not be closed (atlas rebuild
-         *      or world unload invalidates).
+         *      or world unload invalidates), and an interpolated frame must
+         *      not be released (clear and pause drop it with the patch).
          *   2. The block atlas must not be re-stitched between capture
          *      and flush. RemixRenderer clears the forwarder on
          *      pendingTextureReload before rebuild to enforce this.
@@ -90,7 +110,7 @@ public final class AtlasAnimationForwarder {
         final long pixelPtr;
         final int rowPitch;
 
-        PatchRecord(ResourceLocation id, int dstX, int dstY, int srcX, int srcY,
+        PatchRecord(Identifier id, int dstX, int dstY, int srcX, int srcY,
                     int width, int height, int srcImageWidth, int srcImageHeight,
                     long pixelPtr, int rowPitch) {
             this.id = id;
@@ -142,11 +162,12 @@ public final class AtlasAnimationForwarder {
 
     public static void init(
             Map<String, BlockTextureManager.AnimatedSpriteLabPBR> labPBR,
-            Set<ResourceLocation> blockAtlasSprites) {
+            Set<Identifier> blockAtlasSprites) {
         labPBRMap = labPBR;
         blockAtlasSpriteIds = Set.copyOf(blockAtlasSprites);
         pendingPatches.clear();
         animationStates.clear();
+        releaseInterpolatedFrames();
         expectedThread = null;
         // Flip active on LAST so any addPatch probe that races initialization
         // sees a fully constructed forwarder (or no forwarder at all).
@@ -155,20 +176,20 @@ public final class AtlasAnimationForwarder {
                     labPBR.size(), blockAtlasSpriteIds.size());
     }
 
-    public static void addPatch(ResourceLocation spriteId, int dstX, int dstY,
+    public static void addPatch(Identifier spriteId, int dstX, int dstY,
                                 int srcX, int srcY, int width, int height,
                                 int srcImageWidth, int srcImageHeight,
                                 long pixelPtr, int rowPitch) {
         // Drop patches when the forwarder is not active (SDK missing, RTX
         // disabled, or post-shutdown/reload). Prevents an unbounded queue
-        // when SpriteContents.upload still fires but we'll never flush.
+        // when the atlas still ticks but we'll never flush.
         if (!active) return;
 
         if (!BlockTextureManager.BLOCK_ATLAS_ID.equals(currentAtlasId.get())) {
             return;
         }
 
-        Set<ResourceLocation> allowedSprites = blockAtlasSpriteIds;
+        Set<Identifier> allowedSprites = blockAtlasSpriteIds;
         if (allowedSprites == null || !allowedSprites.contains(spriteId)) {
             return;
         }
@@ -189,6 +210,118 @@ public final class AtlasAnimationForwarder {
         pendingPatches.add(new PatchRecord(spriteId, dstX, dstY, srcX, srcY,
                                            width, height, srcImageWidth, srcImageHeight,
                                            pixelPtr, rowPitch));
+    }
+
+    /** Whether ticks of the atlas {@code atlasId} produce patches at all. */
+    public static boolean isForwarding(Identifier atlasId) {
+        return active && BlockTextureManager.BLOCK_ATLAS_ID.equals(atlasId);
+    }
+
+    /**
+     * Queues what one atlas tick drew for {@code sprite}, read from its animation
+     * {@code state} after the tick advanced it.
+     *
+     * <p>A move to a frame with a different sheet index is a patch of that frame out
+     * of the sheet. An interpolating sprite that did not move is blended toward the
+     * next frame by the share of the frame's duration already shown, the blend weight
+     * kept on the current frame and its alpha kept whole, exactly as the CPU blended
+     * it before animation moved to the GPU; a pair of identical frames needs no
+     * patch. Nothing else changes the atlas, so nothing else is queued.
+     */
+    public static void forwardAnimationTick(TextureAtlasSprite sprite, SpriteContents.AnimationState state) {
+        if (!active) return;
+        SpriteAnimationStateAccessor playback = (SpriteAnimationStateAccessor) state;
+        SpriteAnimatedTextureAccessor animation =
+                (SpriteAnimatedTextureAccessor) playback.getAnimationInfo();
+        List<SpriteContents.FrameInfo> frames = animation.getFrames();
+        int frame = playback.getFrame();
+        if (playback.isDirty()) {
+            addFramePatch(sprite, frames.get(frame).index(), animation.getFrameRowSize());
+            return;
+        }
+        int subFrame = playback.getSubFrame();
+        if (!animation.isInterpolateFrames() || subFrame == 0) {
+            return;
+        }
+        SpriteContents.FrameInfo current = frames.get(frame);
+        int nextIndex = frames.get((frame + 1) % frames.size()).index();
+        if (current.index() == nextIndex) {
+            return;
+        }
+        double currentWeight = 1.0 - (double) subFrame / (double) current.time();
+        addInterpolatedPatch(sprite, current.index(), nextIndex, currentWeight,
+                animation.getFrameRowSize());
+    }
+
+    private static void addFramePatch(TextureAtlasSprite sprite, int frameIndex, int frameRowSize) {
+        SpriteContents contents = sprite.contents();
+        NativeImage sheet = ((SpriteContentsAccessor) contents).getImage();
+        int width = contents.width();
+        int height = contents.height();
+        int srcX = (frameIndex % frameRowSize) * width;
+        int srcY = (frameIndex / frameRowSize) * height;
+        int sheetWidth = sheet.getWidth();
+        long pixelPtr = sheet.getPointer() + ((long) srcY * sheetWidth + srcX) * 4L;
+        addPatch(contents.name(),
+                BlockTextureManager.spriteContentX(sprite), BlockTextureManager.spriteContentY(sprite),
+                srcX, srcY, width, height, sheetWidth, sheet.getHeight(), pixelPtr, sheetWidth * 4);
+    }
+
+    private static void addInterpolatedPatch(TextureAtlasSprite sprite, int currentIndex, int nextIndex,
+                                             double currentWeight, int frameRowSize) {
+        SpriteContents contents = sprite.contents();
+        Set<Identifier> allowedSprites = blockAtlasSpriteIds;
+        if (allowedSprites == null || !allowedSprites.contains(contents.name())) {
+            return;
+        }
+        NativeImage sheet = ((SpriteContentsAccessor) contents).getImage();
+        int width = contents.width();
+        int height = contents.height();
+        NativeImage blended = interpolatedFrames.get(contents.name());
+        if (blended == null) {
+            blended = new NativeImage(width, height, false);
+            interpolatedFrames.put(contents.name(), blended);
+        }
+        blendFrames(sheet, blended, width, height,
+                (currentIndex % frameRowSize) * width, (currentIndex / frameRowSize) * height,
+                (nextIndex % frameRowSize) * width, (nextIndex / frameRowSize) * height,
+                currentWeight);
+        addPatch(contents.name(),
+                BlockTextureManager.spriteContentX(sprite), BlockTextureManager.spriteContentY(sprite),
+                0, 0, width, height, width, height, blended.getPointer(), width * 4);
+    }
+
+    /**
+     * Blends two frames of an RGBA sheet into {@code target}, channel by channel in
+     * memory byte order: colour is {@code current * weight + next * (1 - weight)}
+     * truncated, alpha is the current frame's.
+     */
+    static void blendFrames(NativeImage sheet, NativeImage target, int width, int height,
+                            int currentX, int currentY, int nextX, int nextY, double currentWeight) {
+        long sheetPixels = sheet.getPointer();
+        long targetPixels = target.getPointer();
+        int sheetWidth = sheet.getWidth();
+        double nextWeight = 1.0 - currentWeight;
+        for (int y = 0; y < height; y++) {
+            long currentRow = sheetPixels + ((long) (currentY + y) * sheetWidth + currentX) * 4L;
+            long nextRow = sheetPixels + ((long) (nextY + y) * sheetWidth + nextX) * 4L;
+            long targetRow = targetPixels + (long) y * width * 4L;
+            for (int x = 0; x < width; x++) {
+                int current = MemoryUtil.memGetInt(currentRow + x * 4L);
+                int next = MemoryUtil.memGetInt(nextRow + x * 4L);
+                int c2 = (int) (currentWeight * ((current >> 16) & 0xFF) + nextWeight * ((next >> 16) & 0xFF));
+                int c1 = (int) (currentWeight * ((current >> 8) & 0xFF) + nextWeight * ((next >> 8) & 0xFF));
+                int c0 = (int) (currentWeight * (current & 0xFF) + nextWeight * (next & 0xFF));
+                MemoryUtil.memPutInt(targetRow + x * 4L, (current & 0xFF000000) | c2 << 16 | c1 << 8 | c0);
+            }
+        }
+    }
+
+    private static void releaseInterpolatedFrames() {
+        for (NativeImage frame : interpolatedFrames.values()) {
+            frame.close();
+        }
+        interpolatedFrames.clear();
     }
 
     private static FrameSampling resolveLabPBRFrameSampling(
@@ -474,12 +607,13 @@ public final class AtlasAnimationForwarder {
         labPBRMap = null;
         blockAtlasSpriteIds = null;
         animationStates.clear();
+        releaseInterpolatedFrames();
         expectedThread = null;
         currentAtlasId.remove();
         LOGGER.info("AtlasAnimationForwarder cleared");
     }
 
-    public static void beginAtlasUpload(ResourceLocation atlasId) {
+    public static void beginAtlasUpload(Identifier atlasId) {
         currentAtlasId.set(atlasId);
     }
 
@@ -497,6 +631,7 @@ public final class AtlasAnimationForwarder {
         active = false;
         pendingPatches.clear();
         animationStates.clear();
+        releaseInterpolatedFrames();
     }
 
     public static void resume() {

@@ -5,6 +5,10 @@
 package com.nvidia.rtxremix.minecraft;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.opengl.GlTexture;
+import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.textures.GpuTexture;
 import com.nvidia.rtxremix.CameraInfo;
 import com.nvidia.rtxremix.CameraInfoParameterizedEXT;
 import com.nvidia.rtxremix.CameraType;
@@ -47,7 +51,11 @@ import com.nvidia.rtxremix.minecraft.entity.RemixEntitySubmitter;
 import com.nvidia.rtxremix.minecraft.entity.RemixFirstPersonPass;
 import com.nvidia.rtxremix.minecraft.cloud.CloudRenderer;
 import it.unimi.dsi.fastutil.longs.LongSet;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
+import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
+import net.minecraft.client.renderer.state.level.BlockOutlineRenderState;
+import net.minecraft.client.renderer.state.level.CameraRenderState;
+import net.minecraft.client.renderer.SubmitNodeCollector;
+import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -122,6 +130,9 @@ public class RemixRenderer {
     private static final String FAULT_IN_REMIX_CALL = System.getProperty("rtxremix.debug.faultInRemixCall", "");
     private static final int FAULT_IN_REMIX_CALL_FRAME = 120;
 
+    /** {@code DeviceInfo.backendName()} of Blaze3d's OpenGL backend. */
+    private static final String OPENGL_BACKEND_NAME = "OpenGL";
+
     // Remix API instance
     private RemixAPI remixApi;
     private boolean initialized = false;
@@ -130,6 +141,8 @@ public class RemixRenderer {
     private GlInterop interopGlVk = null;
     
     private boolean submitFrameCalled = false;
+    /** Whether {@link #presentFrameVk} ran since the last {@link #finishFramePresentation}. */
+    private boolean presentedThisFrame = false;
     private boolean presentFailureLogged = false;
     private int presentedFrames = 0;
 
@@ -246,8 +259,16 @@ public class RemixRenderer {
         try {
             lastCameraMediumHandle = Long.MIN_VALUE;
 
+            // The composite imports Remix's images into OpenGL. 26.2 can also render
+            // through Vulkan; MinecraftClientMixin tries OpenGL first while the runtime
+            // is installed, so this only fails when OpenGL could not be created.
+            if (!isOpenGlBackend()) {
+                throw new IllegalStateException("RTX Remix needs the OpenGL graphics backend, but the game is "
+                        + "running on " + RenderSystem.getDevice().getDeviceInfo().backendName());
+            }
+
             Minecraft client = Minecraft.getInstance();
-            long glfwHandle = client.getWindow().getWindow();
+            long glfwHandle = client.getWindow().handle();
             
             windowHandle = getHwndFromGlfw(glfwHandle);
             
@@ -539,7 +560,7 @@ public class RemixRenderer {
      * packaged runtime here and development launches stage it here, so no other
      * path is searched.
      */
-    static Path runtimeDll(Path gameDir) {
+    public static Path runtimeDll(Path gameDir) {
         return gameDir.resolve("remix-sdk").resolve("d3d9.dll");
     }
     
@@ -590,7 +611,7 @@ public class RemixRenderer {
             Minecraft client = Minecraft.getInstance();
             if (client != null && client.levelRenderer != null) {
                 LongSet built = RtxRemixMod.builtSections(client);
-                client.levelRenderer.allChanged();
+                client.levelExtractor.allChanged();
                 RtxRemixMod.recaptureTerrainForRemix(client, built);
             }
             pendingTerrainRecaptureAfterTextureReload = false;
@@ -630,10 +651,11 @@ public class RemixRenderer {
      * Advances camera and benchmark frame-start state before Minecraft builds
      * its {@link Camera} for a world render.
      *
-     * <p>This is called from the invocation boundary immediately before
-     * {@code GameRenderer.render}. The eligibility check mirrors
+     * <p>This is called immediately before {@code GameRenderer.update}, which
+     * aligns the camera with its entity, so a camera-path pose is in place
+     * before vanilla reads it. The eligibility check mirrors
      * {@code GameRenderer.render}: menu/loading frames that will not call
-     * {@code renderWorld} must not advance an interactive camera timeline or a
+     * {@code renderLevel} must not advance an interactive camera timeline or a
      * deterministic benchmark frame.</p>
      */
     public void onMinecraftWorldRenderFrameStart(Minecraft client, boolean tick) {
@@ -673,30 +695,28 @@ public class RemixRenderer {
     }
 
     /**
-     * Captures one entity at vanilla's own traversal point, in place of the render
-     * that would have gone to OpenGL.
+     * Captures one entity where vanilla submits its render state, in place of the
+     * submit that would have gone to OpenGL.
      *
-     * <p>Called from {@code WorldRendererMixin}'s wrap of
-     * {@code WorldRenderer.renderEntity}. Returning true tells the mixin to skip
-     * vanilla's call, which is what reduces each entity to a single model
-     * evaluation per frame. Returning false hands the entity back to vanilla, so
-     * an uninitialised renderer or a disabled toggle still renders normally.
+     * <p>Called from {@code LevelRendererCaptureMixin}'s wrap of
+     * {@code EntityRenderDispatcher.submit} in {@code LevelRenderer.submitEntities}.
+     * Returning true tells the mixin to skip vanilla's submit, which is what reduces
+     * each entity to a single model evaluation per frame. Returning false hands the
+     * state back to vanilla, so an uninitialised renderer or a disabled toggle still
+     * renders normally. A glowing entity's outline submits still go to
+     * {@code vanillaCollector}, so vanilla keeps drawing outlines.
      */
-    public boolean renderEntityInPlace(Entity entity, float tickDelta) {
+    public boolean renderEntityInPlace(EntityRenderState state, CameraRenderState camera,
+                                       double dx, double dy, double dz,
+                                       SubmitNodeCollector vanillaCollector) {
         if (!initialized || remixApi == null || entityPass == null || entitySubmitter == null) {
             return false;
         }
         if (!RtxRemixMod.isRtxEnabled() || !RtxRemixMod.isEntitiesEnabled()) {
             return false;
         }
-        Minecraft client = Minecraft.getInstance();
-        EntityRenderDispatcher dispatcher = client == null ? null : client.getEntityRenderDispatcher();
-        if (dispatcher == null) {
-            return false;
-        }
         entityPass.beginFrame(entitySubmitter);
-        entityPass.captureAndSubmit(entity, dispatcher, tickDelta, entitySubmitter);
-        return true;
+        return entityPass.captureInPlace(state, camera, dx, dy, dz, vanillaCollector, entitySubmitter);
     }
 
     /**
@@ -724,13 +744,8 @@ public class RemixRenderer {
         if (EntityRenderContext.get().isActive()) {
             return false;
         }
-        Minecraft client = Minecraft.getInstance();
-        EntityRenderDispatcher dispatcher = client == null ? null : client.getEntityRenderDispatcher();
-        if (dispatcher == null) {
-            return false;
-        }
         entitySubmitter.beginFrame();
-        blockEntityPass.capture(be, call, dispatcher, entitySubmitter);
+        blockEntityPass.capture(be, call, entitySubmitter);
         return true;
     }
 
@@ -738,8 +753,8 @@ public class RemixRenderer {
      * Captures one block's breaking crack at vanilla's own render point, in place of
      * the render that would have gone to OpenGL.
      *
-     * <p>Called from {@code WorldRendererMixin}'s wrap of
-     * {@code BlockRenderManager.renderDamage}. Returning true tells the mixin to skip
+     * <p>Called from {@code LevelRendererCaptureMixin}'s wrap of
+     * {@code SubmitNodeCollector.submitBreakingBlockModel}. Returning true tells the mixin to skip
      * vanilla's call; returning false hands the crack back to vanilla, so an
      * uninitialised renderer or a disabled toggle still renders normally. The crack is
      * terrain decoration, so it follows the world toggle rather than the entity toggle.
@@ -816,8 +831,8 @@ public class RemixRenderer {
             }
             submitPendingParticleFrame();
 
-            Camera camera = client.gameRenderer.getMainCamera();
-            float tickDelta = client.getTimer().getGameTimeDeltaPartialTick(true);
+            Camera camera = client.gameRenderer.mainCamera();
+            float tickDelta = client.getDeltaTracker().getGameTimeDeltaPartialTick(true);
             particleFuture = startParticleRenderTask(tickDelta, ProfileScope.currentFrameIndex());
             
             perfTimer.begin(perfCamera);
@@ -827,7 +842,7 @@ public class RemixRenderer {
                 perfTimer.end(perfCamera);
             }
             
-            Vec3 cameraPos = camera.getPosition();
+            Vec3 cameraPos = camera.position();
 
             perfTimer.begin(perfLights);
             try (ProfileScope lightsScope = ProfileScope.begin("Lights")) {
@@ -1221,9 +1236,9 @@ public class RemixRenderer {
      */
     private void updateCamera(Camera camera, float tickDelta) {
         try {
-            Vec3 pos = camera.getPosition();
-            float pitch = camera.getXRot();
-            float yaw = camera.getYRot();
+            Vec3 pos = camera.position();
+            float pitch = camera.xRot();
+            float yaw = camera.yRot();
     
             float yawRad = (float) Math.toRadians(-yaw);
             float pitchRad = (float) Math.toRadians(pitch);
@@ -1241,7 +1256,7 @@ public class RemixRenderer {
             float upZ = rightX * forwardY - rightY * forwardX;
     
             Minecraft client = Minecraft.getInstance();
-            float worldFov = (float) client.gameRenderer.getFov(camera, tickDelta, true);
+            float worldFov = camera.getFov();
             int width = client.getWindow().getWidth();
             int height = client.getWindow().getHeight();
             float aspect = (float) width / (float) height;
@@ -1361,6 +1376,7 @@ public class RemixRenderer {
      * per run rather than once per frame.
      */
     public void presentFrameVk() {
+        presentedThisFrame = true;
         if (!FAULT_IN_REMIX_CALL.isEmpty() && presentedFrames == FAULT_IN_REMIX_CALL_FRAME) {
             faultInRemixCall();
         }
@@ -1392,6 +1408,21 @@ public class RemixRenderer {
         if (!failed) {
             presentFailureLogged = false;
         }
+    }
+
+    /**
+     * Ends the frame's presentation: presents through Remix when the window surface
+     * did not. Since 26.2 Minecraft skips its present while the window is minimized or
+     * its surface could not be configured, but Remix owns the swapchain whenever the
+     * renderer is initialized, and on 1.21.1 every frame reached the redirected
+     * buffer swap, so every Remix submit is followed by a present. Called once per
+     * frame after the surface's present.
+     */
+    public void finishFramePresentation() {
+        if (initialized && !presentedThisFrame) {
+            presentFrameVk();
+        }
+        presentedThisFrame = false;
     }
 
     private void faultInRemixCall() {
@@ -1460,9 +1491,9 @@ public class RemixRenderer {
         interop.waitForVk(interopInfo);
 
         // The child window covers the host window, so the default framebuffer's
-        // covered pixels are undefined. Minecraft's main framebuffer contains
+        // covered pixels are undefined. Minecraft's main render target contains
         // the same completed world, overlays, and HUD without that dependency.
-        interop.copyFromFramebuffer(Minecraft.getInstance().getMainRenderTarget().frameBufferId);
+        interop.copyFromTexture(mainColorTextureId());
 
         // signal that GL is done copying, so VK can read the image and present
         interop.signalDone();
@@ -1470,6 +1501,26 @@ public class RemixRenderer {
 
     public int getInteropDepthTexture() {
         return interopGlVk.getDepthTexture();
+    }
+
+    /**
+     * The OpenGL name of Minecraft's main color target. Since 26.2 render targets
+     * hold Blaze3d textures; on the OpenGL backend those are {@link GlTexture}s,
+     * which is the only backend the interop supports.
+     */
+    public static int mainColorTextureId() {
+        RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+        GpuTexture color = target.getColorTexture();
+        if (color instanceof GlTexture glColor) {
+            return glColor.glId();
+        }
+        throw new IllegalStateException("The main render target is not an OpenGL texture: "
+                + (color == null ? "none" : color.getClass().getName()));
+    }
+
+    /** Whether Minecraft is rendering through the OpenGL backend, which the interop requires. */
+    static boolean isOpenGlBackend() {
+        return OPENGL_BACKEND_NAME.equals(RenderSystem.getDevice().getDeviceInfo().backendName());
     }
     
     /** Runs on the client executor so the clear lands during teardown, before the next world initializes. */
@@ -1506,11 +1557,12 @@ public class RemixRenderer {
 
     /**
      * Captures vanilla's targeted-block outline for Remix submission later in
-     * the same frame.
+     * the same frame. Called from Fabric's {@code LevelRenderEvents.BEFORE_BLOCK_OUTLINE},
+     * which since 26.1 hands over the extracted outline state.
      */
     public void captureBlockOutline(
-            WorldRenderContext context,
-            WorldRenderContext.BlockOutlineContext outline) {
+            LevelRenderContext context,
+            BlockOutlineRenderState outline) {
         if (blockOutlinePass != null) {
             blockOutlinePass.captureBlockOutline(context, outline);
         }

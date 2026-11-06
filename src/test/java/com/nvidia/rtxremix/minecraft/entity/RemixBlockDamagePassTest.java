@@ -28,7 +28,7 @@ import com.mojang.blaze3d.vertex.VertexConsumer;
  * per frame and the submitter's registry keys by owner identity, so a position must map
  * to one token while it is rendered and lose it once it is not.
  *
- * <p>The projector replaces vanilla's {@code OverlayVertexConsumer}, so its texture
+ * <p>The projector replaces vanilla's {@code SheetedDecalTextureGenerator}, so its texture
  * coordinates are pinned against the vanilla consumer on an identity pose for every
  * face, and it is pinned to deliver them before the normal, which is where
  * {@link RemixCapturingConsumer} closes a vertex.
@@ -128,7 +128,7 @@ class RemixBlockDamagePassTest {
     }
 
     /**
-     * Feeds the four corners of one unit-cube face the way {@code VertexConsumer.quad}
+     * Feeds the four corners of one unit-cube face the way {@code VertexConsumer.putBakedQuad}
      * does: through the element-by-element default, with the block model's own atlas
      * coordinates and a tinted, shaded colour that the crack must not inherit.
      */
@@ -185,6 +185,17 @@ class RemixBlockDamagePassTest {
         @Override
         public VertexConsumer setColor(int red, int green, int blue, int alpha) {
             color = (alpha << 24) | (red << 16) | (green << 8) | blue;
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setColor(int argb) {
+            color = argb;
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setLineWidth(float width) {
             return this;
         }
 

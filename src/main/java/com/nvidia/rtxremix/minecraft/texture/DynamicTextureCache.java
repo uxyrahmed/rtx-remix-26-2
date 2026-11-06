@@ -15,23 +15,18 @@ import java.util.Set;
 import java.util.WeakHashMap;
 import net.minecraft.client.renderer.texture.AbstractTexture;
 import net.minecraft.client.renderer.texture.DynamicTexture;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 
 /**
  * Pixel cache for dynamic textures (maps, player skins, etc.) that are not
  * accessible through the resource manager.
  *
- * <p>Textures are captured via two mixin paths:
- * <ul>
- *   <li>{@code NativeImageBackedTextureMixin}, for {@code NativeImageBackedTexture}
- *       instances (capes, etc.)</li>
- *   <li>{@code PlayerSkinTextureMixin}, for {@code PlayerSkinTexture} instances
- *       (player skins downloaded from Mojang CDN)</li>
- * </ul>
- *
- * <p>In both cases, {@code TextureManagerMixin} intercepts {@code registerTexture()}
- * to record the texture-to-identifier mapping in {@link #TEXTURE_IDS}, and the type-specific
- * mixin captures pixel data at upload time via {@link #captureFromUpload}.
+ * <p>Every such texture is a {@code DynamicTexture}: maps, capes, and player skins,
+ * which the skin downloader registers as a dynamic texture over the processed image.
+ * {@code TextureManagerMixin} intercepts {@code register()} to record the
+ * texture-to-identifier mapping in {@link #TEXTURE_IDS} and to snapshot the image the
+ * texture already holds, and {@code NativeImageBackedTextureMixin} captures pixel data
+ * at every later upload via {@link #captureFromUpload}.
  *
  * <p>Font glyph pages are served here too but never snapshotted: Minecraft assembles a
  * page on the GPU one glyph at a time and {@link GlyphPageMirror} follows along, so
@@ -45,8 +40,9 @@ import net.minecraft.resources.ResourceLocation;
  * whole client session and uploads it exactly once, so a snapshot dropped for any reason
  * other than its texture's release would never be captured again and the player would
  * render with the default skin until the game restarts. {@link #TEXTURE_IDS} holds its
- * keys weakly. Image-backed textures also count as released once their image is null:
- * vanilla can close a map texture without removing it from the texture manager.
+ * keys weakly. Image-backed textures also count as released once their image is closed:
+ * vanilla can close a map texture without removing it from the texture manager, and
+ * closing keeps the image object but frees its pixels.
  *
  * <p>Versions are monotonic for the life of the process. Consumers keep the version they
  * last applied and compare it against the current one, so a counter reset would let a
@@ -61,20 +57,20 @@ public final class DynamicTextureCache {
             Integer.getInteger("rtxremix.dynamicTextureCache.maxEntries", DEFAULT_MAX_CACHE_ENTRIES));
 
     /** Completed pixel cache keyed by texture identifier, in access order so pruning is LRU. */
-    private static final Map<ResourceLocation, Pixels> CACHE =
+    private static final Map<Identifier, Pixels> CACHE =
             Collections.synchronizedMap(new LinkedHashMap<>(64, 0.75f, true));
 
     /** Glyph pages by texture id; see the class comment for why they sit apart from {@link #CACHE}. */
-    private static final Map<ResourceLocation, GlyphPageMirror> GLYPH_PAGES =
+    private static final Map<Identifier, GlyphPageMirror> GLYPH_PAGES =
             Collections.synchronizedMap(new HashMap<>());
 
     /**
-     * Maps a texture object to its identifier so that upload-time mixins
-     * ({@code NativeImageBackedTextureMixin}, {@code PlayerSkinTextureMixin})
-     * can look up the id when {@code upload()} fires.  Uses identity semantics
+     * Maps a texture object to its identifier so that the upload-time mixin
+     * ({@code NativeImageBackedTextureMixin}) can look up the id when
+     * {@code upload()} fires.  Uses identity semantics
      * since {@code AbstractTexture} does not override {@code equals}/{@code hashCode}.
      */
-    private static final Map<AbstractTexture, ResourceLocation> TEXTURE_IDS =
+    private static final Map<AbstractTexture, Identifier> TEXTURE_IDS =
             Collections.synchronizedMap(new WeakHashMap<>());
     private static long nextVersion = 1L;
 
@@ -86,16 +82,16 @@ public final class DynamicTextureCache {
      * The mapping stays live so later uploads from mutable textures can replace
      * the cached pixels.
      */
-    public static void onRegisterTexture(ResourceLocation id, AbstractTexture texture, NativeImage imageOrNull) {
+    public static void onRegisterTexture(Identifier id, AbstractTexture texture, NativeImage imageOrNull) {
         TEXTURE_IDS.put(texture, id);
-        if (imageOrNull != null) {
-            // Image available now (e.g. cape textures, non-async paths).
+        if (imageOrNull != null && !imageOrNull.isClosed()) {
+            // Image available now (capes, downloaded skins, non-async paths).
             store(id, extractPixels(imageOrNull));
         }
     }
 
-    /** Registers the mirror of a glyph page under the id {@code FontStorage} gave it. */
-    public static void onRegisterGlyphPage(ResourceLocation id, GlyphPageMirror page) {
+    /** Registers the mirror of a glyph page under the id {@code GlyphStitcher} gave it. */
+    public static void onRegisterGlyphPage(Identifier id, GlyphPageMirror page) {
         GLYPH_PAGES.put(id, page);
     }
 
@@ -103,12 +99,12 @@ public final class DynamicTextureCache {
 
     /**
      * Captures pixel data at upload time, where {@code image} is guaranteed non-null.
-     * Called from {@code NativeImageBackedTextureMixin} and {@code PlayerSkinTextureMixin}.
+     * Called from {@code NativeImageBackedTextureMixin}.
      *
      * @return true if the texture was registered and pixels were stored
      */
     public static boolean captureFromUpload(AbstractTexture texture, NativeImage image) {
-        ResourceLocation id = TEXTURE_IDS.get(texture);
+        Identifier id = TEXTURE_IDS.get(texture);
         if (id == null) return false;
         store(id, extractPixels(image));
         return true;
@@ -122,7 +118,7 @@ public final class DynamicTextureCache {
     // ---- Public accessors ----
 
     /** The current pixels of a snapshotted texture or a glyph page, or null for anything else. */
-    public static Pixels get(ResourceLocation id) {
+    public static Pixels get(Identifier id) {
         Pixels snapshot = CACHE.get(id);
         if (snapshot != null) {
             return snapshot;
@@ -134,13 +130,13 @@ public final class DynamicTextureCache {
                         page.version());
     }
 
-    public static boolean isGlyphPage(ResourceLocation id) {
+    public static boolean isGlyphPage(Identifier id) {
         return GLYPH_PAGES.containsKey(id);
     }
 
     /** Drops the snapshots of released textures; live registrations and glyph pages stay. */
     public static void clear() {
-        Set<ResourceLocation> liveIds = liveTextureIds();
+        Set<Identifier> liveIds = liveTextureIds();
         synchronized (CACHE) {
             CACHE.keySet().retainAll(liveIds);
         }
@@ -153,14 +149,14 @@ public final class DynamicTextureCache {
      * textures oldest first. A live texture's snapshot is never pruned: its
      * pixels cannot be captured again.
      */
-    private static void store(ResourceLocation id, Pixels pixels) {
+    private static void store(Identifier id, Pixels pixels) {
         CACHE.put(id, pixels);
         if (CACHE.size() <= MAX_CACHE_ENTRIES) {
             return;
         }
-        Set<ResourceLocation> liveIds = liveTextureIds();
+        Set<Identifier> liveIds = liveTextureIds();
         synchronized (CACHE) {
-            Iterator<ResourceLocation> snapshots = CACHE.keySet().iterator();
+            Iterator<Identifier> snapshots = CACHE.keySet().iterator();
             while (CACHE.size() > MAX_CACHE_ENTRIES && snapshots.hasNext()) {
                 if (!liveIds.contains(snapshots.next())) {
                     snapshots.remove();
@@ -169,17 +165,23 @@ public final class DynamicTextureCache {
         }
     }
 
-    private static Set<ResourceLocation> liveTextureIds() {
-        Set<ResourceLocation> liveIds = new HashSet<>();
+    private static Set<Identifier> liveTextureIds() {
+        Set<Identifier> liveIds = new HashSet<>();
         synchronized (TEXTURE_IDS) {
             for (var entry : TEXTURE_IDS.entrySet()) {
                 if (!(entry.getKey() instanceof DynamicTexture texture)
-                        || texture.getPixels() != null) {
+                        || hasOpenImage(texture)) {
                     liveIds.add(entry.getValue());
                 }
             }
         }
         return liveIds;
+    }
+
+    /** Whether the texture still holds pixels; closing it keeps the image object but frees them. */
+    static boolean hasOpenImage(DynamicTexture texture) {
+        NativeImage pixels = texture.getPixels();
+        return pixels != null && !pixels.isClosed();
     }
 
     private static Pixels extractPixels(NativeImage image) {
@@ -188,7 +190,7 @@ public final class DynamicTextureCache {
         byte[] out = new byte[w * h * 4];
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
-                int abgr = image.getPixelRGBA(x, y);
+                int abgr = NativeImagePixels.abgr(image, x, y);
                 int idx = (y * w + x) * 4;
                 out[idx]     = (byte)  (abgr         & 0xFF);
                 out[idx + 1] = (byte) ((abgr >>  8)  & 0xFF);

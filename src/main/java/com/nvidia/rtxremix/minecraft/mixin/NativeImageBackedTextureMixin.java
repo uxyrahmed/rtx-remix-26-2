@@ -17,11 +17,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * Intercepts {@link DynamicTexture#upload()} to capture pixel data
- * for dynamic textures (maps, capes, etc.).
+ * for dynamic textures (maps, capes, skins, etc.).
  *
- * <p>At the HEAD of {@code upload()}, the {@code NativeImage} is guaranteed
- * non-null: the method throws {@link IllegalStateException} if it is. This is
- * the correct capture point for mutable textures whose pixels can change after
+ * <p>{@code upload()} writes the texture's whole image, so its HEAD is the
+ * capture point for mutable textures whose pixels can change after
  * registration.
  *
  * <p>Only stores pixels for textures that {@code TextureManagerMixin} registered
@@ -32,11 +31,13 @@ public class NativeImageBackedTextureMixin {
 
     @Shadow
     @Nullable
-    protected NativeImage pixels;
+    private NativeImage pixels;
 
     @Inject(method = "upload", at = @At("HEAD"))
     private void rtxremix$onUpload(CallbackInfo ci) {
-        if (pixels == null) return;
+        // A closed texture keeps its image object with the pixels freed; vanilla skips
+        // the upload of a disposed texture, and there is nothing to read.
+        if (pixels == null || pixels.isClosed()) return;
         DynamicTextureCache.captureFromUpload((AbstractTexture) (Object) this, pixels);
     }
 }

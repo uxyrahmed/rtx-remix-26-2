@@ -13,7 +13,8 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.client.renderer.blockentity.AbstractEndPortalRenderer;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.packs.resources.Resource;
 import net.minecraft.server.packs.resources.ResourceManager;
 
@@ -22,7 +23,7 @@ import net.minecraft.server.packs.resources.ResourceManager;
  *
  * <p>Vanilla draws both surfaces with position-only vertices and a shader
  * ({@code rendertype_end_portal.fsh}) that sums layers of
- * {@code textures/entity/end_portal.png}, each scaled, rotated and tinted, over
+ * {@code textures/entity/end_portal/end_portal.png}, each scaled, rotated and tinted, over
  * {@code textures/environment/end_sky.png}, projected in screen space: the pattern
  * stays put on screen while the camera moves. A path-traced hit has no screen
  * position to project from, and reflections and refractions see the surface from
@@ -46,10 +47,10 @@ import net.minecraft.server.packs.resources.ResourceManager;
  */
 final class EndPortalSurface {
 
-    static final ResourceLocation PORTAL_TEXTURE_ID = ResourceLocation.fromNamespaceAndPath("rtxremix", "end_portal_surface");
-    static final ResourceLocation GATEWAY_TEXTURE_ID = ResourceLocation.fromNamespaceAndPath("rtxremix", "end_gateway_surface");
-    static final Optional<ResourceLocation> PORTAL_TEXTURE = Optional.of(PORTAL_TEXTURE_ID);
-    static final Optional<ResourceLocation> GATEWAY_TEXTURE = Optional.of(GATEWAY_TEXTURE_ID);
+    static final Identifier PORTAL_TEXTURE_ID = Identifier.fromNamespaceAndPath("rtxremix", "end_portal_surface");
+    static final Identifier GATEWAY_TEXTURE_ID = Identifier.fromNamespaceAndPath("rtxremix", "end_gateway_surface");
+    static final Optional<Identifier> PORTAL_TEXTURE = Optional.of(PORTAL_TEXTURE_ID);
+    static final Optional<Identifier> GATEWAY_TEXTURE = Optional.of(GATEWAY_TEXTURE_ID);
 
     /** {@code EndPortalLayers} in {@code rendertype_end_portal.json}. */
     static final int PORTAL_LAYERS = 15;
@@ -103,10 +104,8 @@ final class EndPortalSurface {
      */
     static final float DESATURATION = 0.3f;
 
-    private static final ResourceLocation SKY_TEXTURE =
-            ResourceLocation.withDefaultNamespace("textures/environment/end_sky.png");
-    private static final ResourceLocation PORTAL_TEXTURE_SOURCE =
-            ResourceLocation.withDefaultNamespace("textures/entity/end_portal.png");
+    private static final Identifier SKY_TEXTURE = AbstractEndPortalRenderer.END_SKY_LOCATION;
+    private static final Identifier PORTAL_TEXTURE_SOURCE = AbstractEndPortalRenderer.END_PORTAL_LOCATION;
 
     /** {@code COLORS} in {@code rendertype_end_portal.fsh}, as RGB triples. */
     private static final float[] COLORS = {
@@ -144,9 +143,9 @@ final class EndPortalSurface {
      * only; the futures complete on worker threads. A reload drops them all, so a bake
      * that finishes for the previous packs is never read.
      */
-    private final Map<ResourceLocation, CompletableFuture<byte[]>> bakes = new HashMap<>();
+    private final Map<Identifier, CompletableFuture<byte[]>> bakes = new HashMap<>();
 
-    static boolean isSurfaceTexture(ResourceLocation textureId) {
+    static boolean isSurfaceTexture(Identifier textureId) {
         return PORTAL_TEXTURE_ID.equals(textureId) || GATEWAY_TEXTURE_ID.equals(textureId);
     }
 
@@ -157,7 +156,7 @@ final class EndPortalSurface {
      *
      * @throws IllegalStateException when the bake failed; the caller should not ask again
      */
-    byte[] poll(ResourceLocation surfaceId, ResourceManager resources) {
+    byte[] poll(Identifier surfaceId, ResourceManager resources) {
         CompletableFuture<byte[]> bake = bakes.computeIfAbsent(surfaceId, id -> {
             int layers = GATEWAY_TEXTURE_ID.equals(id) ? GATEWAY_LAYERS : PORTAL_LAYERS;
             return CompletableFuture.supplyAsync(() -> desaturate(bake(
@@ -181,7 +180,7 @@ final class EndPortalSurface {
         bakes.clear();
     }
 
-    private static Image read(ResourceManager resources, ResourceLocation id) {
+    private static Image read(ResourceManager resources, Identifier id) {
         Resource resource = resources.getResource(id)
                 .orElseThrow(() -> new IllegalStateException("Missing texture " + id));
         try (InputStream in = resource.open(); NativeImage image = NativeImage.read(in)) {
@@ -190,8 +189,8 @@ final class EndPortalSurface {
             int[] rgb = new int[width * height];
             for (int y = 0; y < height; y++) {
                 for (int x = 0; x < width; x++) {
-                    int abgr = image.getPixelRGBA(x, y);
-                    rgb[y * width + x] = ((abgr & 0xFF) << 16) | (abgr & 0xFF00) | ((abgr >> 16) & 0xFF);
+                    // 26.x reads pixels as ARGB.
+                    rgb[y * width + x] = image.getPixel(x, y) & 0xFFFFFF;
                 }
             }
             return new Image(rgb, width, height);

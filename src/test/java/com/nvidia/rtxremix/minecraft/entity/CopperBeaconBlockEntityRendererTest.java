@@ -7,6 +7,7 @@ package com.nvidia.rtxremix.minecraft.entity;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.math.Quadrant;
 import com.nvidia.rtxremix.minecraft.block.CopperBeaconPose;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
@@ -14,7 +15,6 @@ import org.junit.jupiter.api.Test;
 
 import javax.imageio.ImageIO;
 import net.minecraft.client.model.geom.ModelPart;
-import net.minecraft.client.resources.model.BlockModelRotation;
 import net.minecraft.core.Direction;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -288,10 +288,10 @@ class CopperBeaconBlockEntityRendererTest {
             int y = variant.has("y") ? variant.get("y").getAsInt() : 0;
             Direction unrotatedDirection =
                     readBaseModelDirection(variant.get("model").getAsString());
+            // The rotation a blockstate variant's x and y apply to its model.
             directions.put(
                     mount,
-                    BlockModelRotation.by(x, y)
-                            .actualRotation()
+                    Quadrant.fromXYAngles(Quadrant.parseJson(x), Quadrant.parseJson(y))
                             .rotate(unrotatedDirection));
         }
         return directions;

@@ -15,6 +15,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -39,23 +40,23 @@ public abstract class ParticleStateMixin implements RemixParticleStateAccess {
         method = "move(DDD)V",
         at = @At(
             value = "INVOKE",
-            target = "Lnet/minecraft/world/entity/Entity;collideBoundingBox(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/phys/AABB;Lnet/minecraft/world/level/Level;Ljava/util/List;)Lnet/minecraft/world/phys/Vec3;"
+            target = "Lnet/minecraft/world/entity/Entity;collideBoundingBox(Lnet/minecraft/world/phys/shapes/CollisionContext;Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/phys/AABB;Lnet/minecraft/world/level/Level;Ljava/util/List;)Lnet/minecraft/world/phys/Vec3;"
         )
     )
     private Vec3 rtxremix$adjustMovementForParticleCollision(
-            Entity entity,
+            CollisionContext context,
             Vec3 movement,
             AABB box,
             Level world,
             List<VoxelShape> collisions) {
-        if (rtxremix$canFastPathAirCollision(world, box, movement, collisions)) {
+        if (rtxremix$canFastPathAirCollision(context, world, box, movement, collisions)) {
             ParticleTickProfiler.recordSkippedCollisionCheck();
             return movement;
         }
 
         ParticleTickProfiler.beginCollisionCheck();
         try {
-            return Entity.collideBoundingBox(entity, movement, box, world, collisions);
+            return Entity.collideBoundingBox(context, movement, box, world, collisions);
         } finally {
             ParticleTickProfiler.endCollisionCheck();
         }
@@ -81,7 +82,12 @@ public abstract class ParticleStateMixin implements RemixParticleStateAccess {
         rtxremix$particleSlot = slot;
     }
 
+    /**
+     * Whether every block the move sweeps has an empty collision shape, judged with the
+     * particle's own collision context, so the full collision can be skipped.
+     */
     private static boolean rtxremix$canFastPathAirCollision(
+            CollisionContext context,
             Level world,
             AABB box,
             Vec3 movement,
@@ -116,7 +122,7 @@ public abstract class ParticleStateMixin implements RemixParticleStateAccess {
                     }
                     pos.set(x, y, z);
                     BlockState state = world.getBlockState(pos);
-                    if (!state.getCollisionShape(world, pos).isEmpty()) {
+                    if (!state.getCollisionShape(world, pos, context).isEmpty()) {
                         return false;
                     }
                 }

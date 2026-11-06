@@ -240,7 +240,7 @@ instance gets Prism's global maximum, by default 4096 MiB on a machine with
 Path tracing does not remove Minecraft's allocation rate, it adds a render
 thread that must not be paused.
 
-These are the Minecraft 1.21.1 launcher defaults for supported Windows
+These are the Minecraft launcher defaults for 26.2 on supported Windows
 arches: a 2 GB heap with G1GC. Measured on N1X, they showed none of the large
 frame-time spikes seen with generational ZGC. Reducing allocation volume stays
 necessary regardless of collector, since concurrent collector work competes with
@@ -279,7 +279,7 @@ directory for an installed client. Portable Prism keeps the former at
 | `camera-paths/<world-key>/` | you | Your recordings | Loses them, so keep this one |
 | `benchmark/` | benchmark harness | Trigger file, status heartbeat, results, and screenshots | Safe |
 | `saves/<world>/rtx-remix/confs/` | map author | Read when you join that world | Part of the map, not of the install |
-| `saves/<world>/data/rtx_remix_zones.dat` | mod, per save | Zone definitions for that world | Loses the zones defined in that world |
+| `saves/<world>/data/rtx-remix-renderer/zones.dat` | mod, per save | Zone definitions for that world. A save from 1.21.1 keeps them in `data/rtx_remix_zones.dat`, which is read until the first zone edit writes the new file | Loses the zones defined in that world |
 | `logs/latest.log` | game | Where the mod reports what it did and why | Safe |
 
 ## Resource Pack Inputs

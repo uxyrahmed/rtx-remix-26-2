@@ -39,7 +39,7 @@ public final class SectionMeshData {
      * One mesh surface bucket within a section.
      *
      * @param category     chunk manager category (CAT_SOLID, CAT_CUTOUT, etc.)
-     * @param bucketKey    material bucket key (e.g. "solid", "cutout_mipped", "water", "solid_sss")
+     * @param bucketKey    material bucket key (e.g. "solid", "cutout", "water", "solid_sss")
      * @param vertexBuffer HardcodedVertex interleaved (64 bytes/vert); a pooled direct
      *                     buffer in production, positioned at 0 with the payload as limit
      * @param vertexCount  number of vertices

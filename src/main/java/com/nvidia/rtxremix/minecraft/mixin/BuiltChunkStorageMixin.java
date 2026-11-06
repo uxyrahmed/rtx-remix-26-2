@@ -5,139 +5,59 @@
 package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.terrain.BuiltChunkNeighbourhoodAccess;
-import com.nvidia.rtxremix.minecraft.terrain.visibility.BuiltChunkStorageSectionAccess;
 import com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter;
-import com.nvidia.rtxremix.minecraft.terrain.SkippedSectionRebuilds;
-import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
-import com.nvidia.rtxremix.minecraft.RtxRemixMod;
-import com.nvidia.rtxremix.minecraft.terrain.visibility.ChunkStorageTorus;
+import com.nvidia.rtxremix.minecraft.terrain.visibility.BuiltChunkStorageSectionAccess;
+import net.minecraft.client.RotatingSectionStorage;
 import net.minecraft.client.renderer.ViewArea;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
-import net.minecraft.core.BlockPos;
-import net.minecraft.core.SectionPos;
-import net.minecraft.world.level.Level;
+import org.jspecify.annotations.Nullable;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import java.util.function.Consumer;
+
+/**
+ * Section-addressed access to the view area's slots for the terrain pipeline; see
+ * {@link BuiltChunkStorageSectionAccess}.
+ *
+ * <p>Vanilla repositions the slot window itself: it returns at once when the camera section
+ * has not changed and re-nodes only the slots whose section did, which is what the mod's own
+ * repositioning used to do for the per-frame full scan vanilla made before.
+ */
 @Mixin(ViewArea.class)
-public abstract class BuiltChunkStorageMixin
-        implements ChunkStorageTorus.StorageAccess, BuiltChunkStorageSectionAccess {
-    @Shadow
-    protected int sectionGridSizeX;
-
-    @Shadow
-    protected int sectionGridSizeY;
-
-    @Shadow
-    protected int sectionGridSizeZ;
+public abstract class BuiltChunkStorageMixin implements BuiltChunkStorageSectionAccess {
 
     @Shadow
     @Final
-    protected Level level;
+    private RotatingSectionStorage<SectionRenderDispatcher.RenderSection> sections;
 
     @Shadow
-    public SectionRenderDispatcher.RenderSection[] sections;
+    public abstract int minSectionY();
 
-    private ChunkStorageTorus.Workspace rtxremix$torusWorkspace;
+    @Shadow
+    public abstract int maxSectionY();
 
-    @Inject(method = "repositionCamera(DD)V", at = @At("HEAD"), cancellable = true)
-    private void rtxremix$updateCameraPosition(double cameraX, double cameraZ, CallbackInfo ci) {
-        if (!RtxRemixMod.isRtxEnabled()) {
-            return;
-        }
-        if (rtxremix$torusWorkspace == null) {
-            rtxremix$torusWorkspace = new ChunkStorageTorus.Workspace();
-        }
-
-        try (ProfileScope scope = ProfileScope.begin("ChunkStorage.updateCameraPosition")) {
-            int movedSlots = ChunkStorageTorus.reposition(
-                    this,
-                    rtxremix$torusWorkspace,
-                    sectionGridSizeX,
-                    sectionGridSizeY,
-                    sectionGridSizeZ,
-                    level.getMinBuildHeight(),
-                    cameraX,
-                    cameraZ);
-            scope.captureCount(movedSlots).scannedChunkCount(sectionGridSizeX + sectionGridSizeZ);
-        }
-        ci.cancel();
+    @Override
+    public SectionRenderDispatcher.@Nullable RenderSection rtxremix$residentSection(int cx, int sy, int cz) {
+        return sections.getValue(cx, sy, cz);
     }
 
     @Override
-    public int rtxremix$getOriginX(int slotIndex) {
-        return sections[slotIndex].getOrigin().getX();
-    }
-
-    @Override
-    public int rtxremix$getOriginZ(int slotIndex) {
-        return sections[slotIndex].getOrigin().getZ();
-    }
-
-    @Override
-    public void rtxremix$setOrigin(int slotIndex, int x, int y, int z) {
-        sections[slotIndex].setOrigin(x, y, z);
-    }
-
-    /** The slot vanilla aliases the section onto, or null unless that slot currently holds the section. */
-    private SectionRenderDispatcher.RenderSection rtxremix$residentSlot(int cx, int sy, int cz) {
-        int slotX = Math.floorMod(cx, sectionGridSizeX);
-        int slotY = Math.floorMod(sy - level.getMinSection(), sectionGridSizeY);
-        int slotZ = Math.floorMod(cz, sectionGridSizeZ);
-        SectionRenderDispatcher.RenderSection slot = sections[ChunkStorageTorus.index(slotX, slotY, slotZ, sectionGridSizeX, sectionGridSizeY)];
-        BlockPos origin = slot.getOrigin();
-        boolean resident = SectionPos.blockToSectionCoord(origin.getX()) == cx
-                && SectionPos.blockToSectionCoord(origin.getY()) == sy
-                && SectionPos.blockToSectionCoord(origin.getZ()) == cz;
-        return resident ? slot : null;
-    }
-
-    @Override
-    public void rtxremix$scheduleRebuildIfResident(int cx, int sy, int cz) {
-        SectionRenderDispatcher.RenderSection slot = rtxremix$residentSlot(cx, sy, cz);
-        if (slot != null) {
-            slot.setDirty(false);
-        }
-    }
-
-    @Override
-    public void rtxremix$flagLoadedSection(int cx, int sy, int cz) {
-        if (!NeighbourReflagFilter.sectionInRange(sy, level.getMinSection(), sectionGridSizeY)) {
-            return;
-        }
-        rtxremix$scheduleRebuildIfResident(cx, sy, cz);
-        for (int k = 0; k < NeighbourReflagFilter.NEIGHBOUR_COUNT; k++) {
-            SectionRenderDispatcher.RenderSection slot = rtxremix$residentSlot(
-                    cx + NeighbourReflagFilter.DX[k], sy, cz + NeighbourReflagFilter.DZ[k]);
-            boolean resident = slot != null;
-            boolean awaitingBuild = resident && slot.isDirty();
-            int snapshotMask = resident ? ((BuiltChunkNeighbourhoodAccess) slot).rtxremix$snapshotMask() : 0;
-            int loaderBit = NeighbourReflagFilter.bit(NeighbourReflagFilter.mirroredIndex(k));
-            switch (NeighbourReflagFilter.decideNeighbour(resident, awaitingBuild, snapshotMask, loaderBit)) {
-                case FLAG -> {
-                    slot.setDirty(false);
-                    NeighbourReflagFilter.recordKept();
-                }
-                case DROP_IN_SNAPSHOT -> SkippedSectionRebuilds.recordNeighbourInSnapshot();
-                case SKIP_NOT_RESIDENT, SKIP_AWAITING_BUILD -> {
-                }
-            }
-        }
+    public void rtxremix$forEachSection(Consumer<SectionRenderDispatcher.RenderSection> action) {
+        sections.forEach(action);
     }
 
     @Override
     public void rtxremix$clearNeighbourSnapshotBits(int cx, int cz) {
-        int bottomSection = level.getMinSection();
+        int bottomSection = minSectionY();
+        int topSection = maxSectionY();
         for (int k = 0; k < NeighbourReflagFilter.NEIGHBOUR_COUNT; k++) {
             int bit = NeighbourReflagFilter.bit(NeighbourReflagFilter.mirroredIndex(k));
             int neighbourX = cx + NeighbourReflagFilter.DX[k];
             int neighbourZ = cz + NeighbourReflagFilter.DZ[k];
-            for (int row = 0; row < sectionGridSizeY; row++) {
-                SectionRenderDispatcher.RenderSection slot = rtxremix$residentSlot(neighbourX, bottomSection + row, neighbourZ);
+            for (int sy = bottomSection; sy <= topSection; sy++) {
+                SectionRenderDispatcher.RenderSection slot = sections.getValue(neighbourX, sy, neighbourZ);
                 if (slot != null) {
                     ((BuiltChunkNeighbourhoodAccess) slot).rtxremix$clearSnapshotBit(bit);
                 }

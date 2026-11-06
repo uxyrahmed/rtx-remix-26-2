@@ -8,10 +8,8 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.nvidia.rtxremix.minecraft.entity.EntityRenderContext;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.renderer.ItemInHandRenderer;
-import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.world.InteractionHand;
-import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.item.ItemDisplayContext;
 import net.minecraft.world.item.ItemStack;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -19,67 +17,54 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Tells the capture who is holding the item being rendered, and for the
- * first-person view which vanilla hand it is in.
+ * Tells the first-person capture which vanilla hand each arm and item belongs to.
  *
- * <p>Every hand-held render, first person and every entity's hands alike, passes
- * through {@code renderItem(LivingEntity, ...)}, so the holder recorded here is
- * what lets the item renderer's hook decide whether a held torch is burning.
+ * <p>{@code submitArmWithItem} submits one hand's arm, map or item. The capture evaluates
+ * each node as it is submitted, so every pivot pushed between this method's HEAD and
+ * RETURN belongs to that hand, which is how the capture tells the main hand's held
+ * beacon from the off hand's.
+ *
+ * <p>On 1.21.1 this mixin also recorded the holder of every hand-held item for the item
+ * renderer's lit-element hook. Since 26.1 the holder is known only while an item's render
+ * state is resolved, so {@code ItemModelResolverMixin} takes that decision there.
  */
 @Mixin(ItemInHandRenderer.class)
 public class HeldItemRendererMixin {
 
-    private static final String rtxremix$RENDER_HELD_ITEM =
-            "renderItem(Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/world/item/ItemStack;"
-            + "Lnet/minecraft/world/item/ItemDisplayContext;Z"
-            + "Lcom/mojang/blaze3d/vertex/PoseStack;"
-            + "Lnet/minecraft/client/renderer/MultiBufferSource;I)V";
+    private static final String rtxremix$SUBMIT_ARM_WITH_ITEM =
+            "submitArmWithItem(Lnet/minecraft/client/player/AbstractClientPlayer;FFLnet/minecraft/world/InteractionHand;"
+            + "FLnet/minecraft/world/item/ItemStack;FLcom/mojang/blaze3d/vertex/PoseStack;"
+            + "Lnet/minecraft/client/renderer/SubmitNodeCollector;I)V";
 
-    @Inject(method = rtxremix$RENDER_HELD_ITEM, at = @At("HEAD"))
-    private void rtxremix$beginHeldItem(LivingEntity entity, ItemStack stack, ItemDisplayContext mode,
-                                        boolean leftHanded, PoseStack matrices,
-                                        MultiBufferSource vertexConsumers, int light, CallbackInfo ci) {
-        EntityRenderContext context = EntityRenderContext.get();
-        if (context.isRemixPass()) context.setHeldItemHolder(entity);
-    }
-
-    @Inject(method = rtxremix$RENDER_HELD_ITEM, at = @At("RETURN"))
-    private void rtxremix$endHeldItem(LivingEntity entity, ItemStack stack, ItemDisplayContext mode,
-                                      boolean leftHanded, PoseStack matrices,
-                                      MultiBufferSource vertexConsumers, int light, CallbackInfo ci) {
-        EntityRenderContext context = EntityRenderContext.get();
-        if (context.isRemixPass()) context.clearHeldItemHolder();
-    }
-
-    @Inject(method = "renderArmWithItem", at = @At("HEAD"))
+    @Inject(method = rtxremix$SUBMIT_ARM_WITH_ITEM, at = @At("HEAD"))
     private void rtxremix$beginFirstPersonHand(
             AbstractClientPlayer player,
-            float tickDelta,
-            float pitch,
+            float frameInterp,
+            float xRot,
             InteractionHand hand,
-            float swingProgress,
-            ItemStack item,
-            float equipProgress,
-            PoseStack matrices,
-            MultiBufferSource vertexConsumers,
-            int light,
+            float attack,
+            ItemStack itemStack,
+            float inverseArmHeight,
+            PoseStack poseStack,
+            SubmitNodeCollector submitNodeCollector,
+            int lightCoords,
             CallbackInfo ci) {
         EntityRenderContext context = EntityRenderContext.get();
         if (context.isRemixPass()) context.setActiveHand(hand);
     }
 
-    @Inject(method = "renderArmWithItem", at = @At("RETURN"))
+    @Inject(method = rtxremix$SUBMIT_ARM_WITH_ITEM, at = @At("RETURN"))
     private void rtxremix$endFirstPersonHand(
             AbstractClientPlayer player,
-            float tickDelta,
-            float pitch,
+            float frameInterp,
+            float xRot,
             InteractionHand hand,
-            float swingProgress,
-            ItemStack item,
-            float equipProgress,
-            PoseStack matrices,
-            MultiBufferSource vertexConsumers,
-            int light,
+            float attack,
+            ItemStack itemStack,
+            float inverseArmHeight,
+            PoseStack poseStack,
+            SubmitNodeCollector submitNodeCollector,
+            int lightCoords,
             CallbackInfo ci) {
         EntityRenderContext context = EntityRenderContext.get();
         if (context.isRemixPass()) context.clearActiveHand();

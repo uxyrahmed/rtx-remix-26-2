@@ -392,7 +392,7 @@ benchmark requirements. Inspect the effective plan with `run --dry-run`.
 |---|---|---|
 | `renderDistance` | `<gameDir>/options.txt` | 32 |
 | `simulationDistance` | `<gameDir>/options.txt` | 12 |
-| `graphicsMode` | `<gameDir>/options.txt` | 1 (Fancy) |
+| `graphicsMode` | `<gameDir>/options.txt`, as 26.2's `cutoutLeaves`, `weatherRadius`, `vignette` and `improvedTransparency` with `graphicsPreset` Custom | 1 (Fancy) |
 | `modSettings` | `<gameDir>/config/rtxremix.json` | `dist.light` 0, `dist.entity` 0, `light.reach` 192 |
 
 `modSettings` maps mod setting ids to values. They are merged into the settings

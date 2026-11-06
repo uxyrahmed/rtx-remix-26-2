@@ -5,6 +5,7 @@
 package com.nvidia.rtxremix.minecraft.entity;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.QuadInstance;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.nvidia.rtxremix.InstanceCategoryBit;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -13,23 +14,32 @@ import org.joml.Vector3f;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.List;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
+import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
 import net.minecraft.client.resources.model.ModelBakery;
+import net.minecraft.client.resources.model.geometry.BakedQuad;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 /**
- * Captures the block-breaking crack where vanilla draws it and submits it through the
+ * Captures the block-breaking crack where vanilla submits it and submits it through the
  * entity submitter as a decal over the terrain.
  *
- * <p>{@code WorldRendererMixin} wraps vanilla's {@code BlockRenderManager.renderDamage}
- * call and routes it to {@code RemixRenderer.renderBlockDamageInPlace}, which calls
- * {@link #capture}. The block model is rendered on this pass's identity
+ * <p>{@code LevelRendererCaptureMixin} wraps vanilla's {@code submitBreakingBlockModel}
+ * call in {@code LevelRenderer.submitBlockDestroyAnimation} and routes it to
+ * {@code RemixRenderer.renderBlockDamageInPlace}, which calls {@link #capture}. The block's
+ * model is put through {@link #putModel} on this pass's identity
  * {@link RecyclingMatrixStack} rather than vanilla's camera-relative one, so the captured
- * quads are block-local and the crack projection runs in block space: one pooled mesh per
- * block shape and stage, and an instance root that is a translation by the block position.
+ * quads are block-local and the crack projection runs in block space:
+ * one pooled mesh per block shape and stage, and an instance root that is a translation by
+ * the block position.
  *
  * <p>Vanilla allocates a fresh {@code BlockPos} for every broken block every frame, and the
  * submitter's retained registry keys parts by owner identity, so each broken position is
@@ -55,12 +65,54 @@ public final class RemixBlockDamagePass {
             role -> InstanceCategoryBit.DECAL_STATIC;
 
     /**
-     * Vanilla's damage render with the matrix stack and consumer left open, so the pass
-     * can supply its own. The mixin's {@code Operation} handle stays in the mixin.
+     * The damaged block's geometry with the matrix stack and consumer left open, so the
+     * pass can supply its own; see {@link #putModel}.
      */
     @FunctionalInterface
     public interface BlockDamageRenderCall {
         void render(PoseStack matrices, VertexConsumer consumer);
+    }
+
+    private static final Direction[] DIRECTIONS = Direction.values();
+    /** White and unlit: the projector discards the model's own colour and light anyway. */
+    private static final QuadInstance DAMAGE_QUAD = new QuadInstance();
+    // Render thread only, like the shared quad instance.
+    private static final RandomSource MODEL_RANDOM = RandomSource.create();
+    private static final List<BlockStateModelPart> MODEL_PARTS = new ArrayList<>();
+
+    /**
+     * Puts a damaged block's model into {@code consumer} the way vanilla's crack submit
+     * draws it: every quad of every part its model picks with the block's position seed,
+     * culled faces included, after the model's random offset, which on 1.21.1 the block
+     * renderer applied itself.
+     *
+     * <p>The parts are collected here rather than taken from vanilla's submit: Fabric's
+     * renderer API cancels vanilla's collection at that call site and hands the crack
+     * over as a mesh instead, so the list the submit carries arrives empty.
+     */
+    public static void putModel(BlockState state, BlockPos pos, PoseStack matrices, VertexConsumer consumer) {
+        BlockStateModel model = Minecraft.getInstance().getModelManager().getBlockStateModelSet().get(state);
+        MODEL_RANDOM.setSeed(state.getSeed(pos));
+        MODEL_PARTS.clear();
+        model.collectParts(MODEL_RANDOM, MODEL_PARTS);
+        matrices.pushPose();
+        matrices.translate(state.getOffset(pos));
+        PoseStack.Pose pose = matrices.last();
+        try {
+            for (BlockStateModelPart part : MODEL_PARTS) {
+                for (Direction direction : DIRECTIONS) {
+                    for (BakedQuad quad : part.getQuads(direction)) {
+                        consumer.putBakedQuad(pose, quad, DAMAGE_QUAD);
+                    }
+                }
+                for (BakedQuad quad : part.getQuads(null)) {
+                    consumer.putBakedQuad(pose, quad, DAMAGE_QUAD);
+                }
+            }
+        } finally {
+            MODEL_PARTS.clear();
+            matrices.popPose();
+        }
     }
 
     private final RecyclingMatrixStack matrices = new RecyclingMatrixStack();
@@ -208,6 +260,17 @@ public final class RemixBlockDamagePass {
         }
 
         @Override
+        public VertexConsumer setColor(int argb) {
+            target.setColor(0xFFFFFFFF);
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setLineWidth(float width) {
+            return this;
+        }
+
+        @Override
         public VertexConsumer setUv(float u, float v) {
             return this;
         }
@@ -226,7 +289,7 @@ public final class RemixBlockDamagePass {
 
         @Override
         public VertexConsumer setNormal(float x, float y, float z) {
-            Direction face = Direction.getNearest(x, y, z);
+            Direction face = Direction.getApproximateNearest(x, y, z);
             projected.set(this.x, this.y, this.z)
                     .rotateY(Mth.PI)
                     .rotateX(-Mth.HALF_PI)

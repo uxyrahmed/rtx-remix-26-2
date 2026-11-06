@@ -24,7 +24,7 @@ import com.nvidia.rtxremix.minecraft.entity.CopperBeaconAnimationClock;
 import com.nvidia.rtxremix.minecraft.entity.RemixFirstPersonPass;
 import com.nvidia.rtxremix.minecraft.texture.BlockTextureManager;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
-import org.joml.Matrix4f;
+import org.joml.Matrix4fc;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 import org.slf4j.Logger;
@@ -41,7 +41,6 @@ import java.util.Set;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.client.renderer.DimensionSpecialEffects;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
@@ -57,6 +56,8 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.dimension.DimensionType;
+import net.minecraft.world.attribute.EnvironmentAttributes;
 import net.minecraft.world.phys.Vec3;
 
 /**
@@ -409,7 +410,7 @@ public class LightManager {
 
         firstPersonShadowModelOffset = shadowModelPlacement.resolve(
                 world, camera, player, constraints, frameDtSeconds);
-        Vec3 displacedHeadCenter = camera.getPosition().add(firstPersonShadowModelOffset);
+        Vec3 displacedHeadCenter = camera.position().add(firstPersonShadowModelOffset);
 
         // The rig lights surfaces but never the air. A first-person emitter is
         // locked to the camera, and the volumetric grid reuses the previous
@@ -621,7 +622,7 @@ public class LightManager {
 
         Transformation transform =
                 renderState.transformation().get(display.calculateInterpolationProgress(tickDelta));
-        Matrix4f matrix = transform.getMatrix();
+        Matrix4fc matrix = transform.getMatrix();
 
         // Matches DisplayEntityRenderer.getBillboardRotation for BillboardMode.FIXED.
         float yaw = Mth.rotLerp(tickDelta, display.yRotO, display.getYRot());
@@ -799,7 +800,7 @@ public class LightManager {
                 lensOffsetDirection.scale(BeaconBeam.HELD_LENS_OFFSET));
         float coneAngle = BeaconBeam.CONE_ANGLE_DEGREES;
         if (localFirstPerson && collisionWorld != null && collisionCamera != null) {
-            Vec3 collisionOrigin = collisionCamera.getPosition();
+            Vec3 collisionOrigin = collisionCamera.position();
             Vec3 preferredOffset = pos.subtract(collisionOrigin);
             double preferredDistance = preferredOffset.length();
             if (preferredDistance > 1.0e-6) {
@@ -1034,11 +1035,12 @@ public class LightManager {
     // ================================================================
 
     private void updateSkyLight(ClientLevel world) {
-        // Only a NORMAL sky has a sun and a moon. The End and the Nether pin their time, so
-        // evaluating them would light a permanent noon or midnight that vanilla never draws.
-        skyLightState = world.effects().skyType() == DimensionSpecialEffects.SkyType.NORMAL
+        // Only the overworld skybox has a sun and a moon. The End and the Nether pin their
+        // time, so evaluating them would light a permanent noon or midnight that vanilla
+        // never draws.
+        skyLightState = world.dimensionType().skybox() == DimensionType.Skybox.OVERWORLD
                 ? evaluateSkyLightState(
-                        world.getTimeOfDay(0f),
+                        skyAngle(world),
                         world.getRainLevel(0.0f),
                         world.getThunderLevel(0.0f))
                 : SkyLightState.empty();
@@ -1133,6 +1135,15 @@ public class LightManager {
     private static float lerp(float from, float to, float amount) {
         float t = Math.max(0.0f, Math.min(1.0f, amount));
         return from + (to - from) * t;
+    }
+
+    /**
+     * The sun's position on its path as a fraction of a turn, 0 at noon, which is what
+     * {@link #computeSunDirection} takes. The dimension's timelines drive the sun angle
+     * attribute; like the time of day it replaces, it advances once per tick.
+     */
+    public static float skyAngle(ClientLevel world) {
+        return world.environmentAttributes().getDimensionValue(EnvironmentAttributes.SUN_ANGLE) / 360.0f;
     }
 
     public static float[] computeSunDirection(float skyAngle) {

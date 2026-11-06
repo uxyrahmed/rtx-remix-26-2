@@ -7,15 +7,15 @@ package com.nvidia.rtxremix.minecraft.block;
 import com.nvidia.rtxremix.minecraft.RtxRemixCommonMod;
 import com.nvidia.rtxremix.minecraft.light.LightEntry;
 import com.nvidia.rtxremix.minecraft.light.OverridesItemLight;
-import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
+import net.fabricmc.fabric.api.creativetab.v1.CreativeModeTabEvents;
 import net.minecraft.core.Direction;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.item.BlockItem;
-import net.minecraft.world.item.CreativeModeTab;
+import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.block.Block;
@@ -64,15 +64,6 @@ public abstract class SpotLightBlock extends DirectionalBlock implements Overrid
     /** Full block light level, matching a lantern. */
     protected static final int LUMINANCE = 15;
 
-    /**
-     * Vanilla's "Functional Blocks" creative tab, where torches and lanterns live.
-     *
-     * <p>Built from the registry id rather than {@code ItemGroups.FUNCTIONAL},
-     * which is private in 1.21.1 and would otherwise need an access-widener entry.
-     */
-    private static final ResourceKey<CreativeModeTab> FUNCTIONAL_BLOCKS =
-            ResourceKey.create(Registries.CREATIVE_MODE_TAB, ResourceLocation.withDefaultNamespace("functional_blocks"));
-
     private final LightEntry.ColorOverride beamColor;
 
     protected SpotLightBlock(BlockBehaviour.Properties settings, LightEntry.ColorOverride beamColor) {
@@ -81,9 +72,19 @@ public abstract class SpotLightBlock extends DirectionalBlock implements Overrid
         registerDefaultState(getStateDefinition().any().setValue(FACING, Direction.NORTH));
     }
 
-    /** Shared settings for every beacon variant. */
-    protected static BlockBehaviour.Properties beaconSettings() {
+    /** The block registry key of the variant registered under {@code path} in this mod's namespace. */
+    protected static ResourceKey<Block> blockKey(String path) {
+        return ResourceKey.create(Registries.BLOCK, Identifier.fromNamespaceAndPath(RtxRemixCommonMod.MOD_ID, path));
+    }
+
+    /**
+     * Shared settings for every beacon variant. A block derives its loot table and
+     * translation key from its registry key while it is constructed, so the key travels
+     * in the settings and must be the one {@link #registerAll()} registers it under.
+     */
+    protected static BlockBehaviour.Properties beaconSettings(ResourceKey<Block> id) {
         return BlockBehaviour.Properties.of()
+                .setId(id)
                 .strength(3.0f)
                 .sound(SoundType.METAL)
                 .lightLevel(state -> LUMINANCE);
@@ -105,16 +106,21 @@ public abstract class SpotLightBlock extends DirectionalBlock implements Overrid
      * method touches therefore has to be loadable on a dedicated server.
      */
     public static void registerAll() {
-        register(CopperBeaconBlock.ID, CopperBeaconBlock.INSTANCE);
+        register(CopperBeaconBlock.KEY, CopperBeaconBlock.INSTANCE);
         CopperBeaconBlockEntity.register();
     }
 
-    /** Registers one variant, its item, and the creative tab entry. */
-    private static void register(String path, SpotLightBlock block) {
-        ResourceLocation id = ResourceLocation.fromNamespaceAndPath(RtxRemixCommonMod.MOD_ID, path);
-        Registry.register(BuiltInRegistries.BLOCK, id, block);
-        BlockItem item = Registry.register(BuiltInRegistries.ITEM, id, new BlockItem(block, new Item.Properties()));
-        ItemGroupEvents.modifyEntriesEvent(FUNCTIONAL_BLOCKS).register(entries -> entries.accept(item));
+    /**
+     * Registers one variant, its item, and the creative tab entry. The item shares the
+     * block's id and, like vanilla block items, its translation key; its model comes from
+     * the item definition {@code assets/<namespace>/items/<path>.json}.
+     */
+    private static void register(ResourceKey<Block> key, SpotLightBlock block) {
+        Registry.register(BuiltInRegistries.BLOCK, key, block);
+        ResourceKey<Item> itemKey = ResourceKey.create(Registries.ITEM, key.identifier());
+        BlockItem item = Registry.register(BuiltInRegistries.ITEM, itemKey,
+                new BlockItem(block, new Item.Properties().setId(itemKey).useBlockDescriptionPrefix()));
+        CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.FUNCTIONAL_BLOCKS).register(output -> output.accept(item));
     }
 
     @Override

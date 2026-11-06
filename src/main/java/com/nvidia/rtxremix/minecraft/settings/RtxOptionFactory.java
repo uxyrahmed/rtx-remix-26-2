@@ -61,12 +61,15 @@ final class RtxOptionFactory {
                 int sentinelSliderValue = sentinelSliderValue(s.id());
                 int sliderMin = sentinelSliderValue > 0 ? 1 : (int) s.min() / s.step();
                 int sliderMax = sentinelSliderValue > 0 ? sentinelSliderValue : (int) s.max() / s.step();
+                // Discrete, as vanilla's own whole-number sliders are: the arrow keys
+                // step one slider value at a time, the sentinel included.
                 var callbacks =
                         sliderApplyPolicy(
                                 new OptionInstance.IntRange(
                                         sliderMin, sliderMax, true).xmap(
                                                 value -> intValueFromSlider(s, value),
-                                                value -> sliderValueFromInt(s, value)),
+                                                value -> sliderValueFromInt(s, value),
+                                                true),
                                 s.applySliderValueImmediately());
                 return new OptionInstance<>(
                         setting.labelKey(),
@@ -130,6 +133,16 @@ final class RtxOptionFactory {
             @Override
             public T fromSliderValue(double sliderProgress) {
                 return callbacks.fromSliderValue(sliderProgress);
+            }
+
+            @Override
+            public Optional<T> next(T current) {
+                return callbacks.next(current);
+            }
+
+            @Override
+            public Optional<T> previous(T current) {
+                return callbacks.previous(current);
             }
 
             @Override

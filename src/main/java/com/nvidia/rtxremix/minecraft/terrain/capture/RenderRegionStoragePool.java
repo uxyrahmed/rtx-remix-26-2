@@ -10,10 +10,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Recycles the {@code long[]} storage behind the block-state copies a render region snapshot
- * takes. Vanilla snapshots every section of up to nine chunks on the render thread for each
- * rebuild it schedules, and the region lives only until the rebuild task has run, so the
+ * takes. Vanilla copies every section of a 3x3x3 neighbourhood on the render thread for each
+ * compile it schedules, and the region lives only until the compile task has run, so the
  * arrays are the render thread's largest source of garbage while chunks load. Copies take
- * their array from here while a snapshot is being made ({@link #copying}) and the rebuild
+ * their array from here while a snapshot is being made ({@link #copying}) and the compile
  * task returns them once the region it used is dead.
  *
  * <p>Arrays are keyed by exact length. The pool is bounded so a burst of rebuilds cannot pin
@@ -25,22 +25,50 @@ public final class RenderRegionStoragePool {
 
     private static final ConcurrentHashMap<Integer, Stack> BY_LENGTH = new ConcurrentHashMap<>();
     private static final AtomicInteger pooled = new AtomicInteger();
-    private static final ThreadLocal<Boolean> COPYING = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    private static final ThreadLocal<CopyState> COPYING = ThreadLocal.withInitial(CopyState::new);
+
+    /** One thread's snapshot copy in progress; mutable so a copy allocates nothing to track. */
+    private static final class CopyState {
+        boolean active;
+        long[] copied;
+    }
 
     private RenderRegionStoragePool() {
     }
 
     /** True while the current thread is taking a region snapshot; copies then draw from the pool. */
     public static boolean copying() {
-        return COPYING.get();
+        return COPYING.get().active;
     }
 
     public static void beginCopying() {
-        COPYING.set(Boolean.TRUE);
+        CopyState state = COPYING.get();
+        state.active = true;
+        state.copied = null;
     }
 
-    public static void endCopying() {
-        COPYING.set(Boolean.FALSE);
+    /**
+     * Ends the snapshot copy begun on this thread.
+     *
+     * @return the pooled array the copy took through {@link #acquireForCopy}, now owned by the
+     *         snapshot that made the copy, or null when the copy needed none
+     */
+    public static long[] endCopying() {
+        CopyState state = COPYING.get();
+        long[] copied = state.copied;
+        state.active = false;
+        state.copied = null;
+        return copied;
+    }
+
+    /**
+     * {@link #acquire} for the storage copy of the snapshot being taken on this thread, which
+     * {@link #endCopying} hands to that snapshot. A section copy makes one storage copy.
+     */
+    public static long[] acquireForCopy(int length) {
+        long[] array = acquire(length);
+        COPYING.get().copied = array;
+        return array;
     }
 
     /** A recycled array of exactly {@code length} longs, or a new one. Contents are undefined. */

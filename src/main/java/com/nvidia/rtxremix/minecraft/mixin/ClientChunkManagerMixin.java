@@ -14,11 +14,12 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
+import java.util.Map;
 import java.util.function.Consumer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientChunkCache;
 import net.minecraft.core.SectionPos;
-import net.minecraft.nbt.CompoundTag;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData;
 import net.minecraft.world.level.ChunkPos;
@@ -71,7 +72,7 @@ public abstract class ClientChunkManagerMixin {
             int x,
             int z,
             FriendlyByteBuf buf,
-            CompoundTag nbt,
+            Map<Heightmap.Types, long[]> heightmaps,
             Consumer<ClientboundLevelChunkPacketData.BlockEntityTagOutput> consumer,
             CallbackInfoReturnable<LevelChunk> cir) {
         if (!RtxRemixMod.isRtxEnabled()) {
@@ -86,7 +87,7 @@ public abstract class ClientChunkManagerMixin {
         }
     }
 
-    // loadChunkFromPacket runs only on the render thread, so one field carries the
+    // replaceWithPacketData runs only on the render thread, so one field carries the
     // start time from the head to the return of each apply.
     private static long rtxremix$applyStartNanos;
 
@@ -99,7 +100,7 @@ public abstract class ClientChunkManagerMixin {
             int x,
             int z,
             FriendlyByteBuf buf,
-            CompoundTag nbt,
+            Map<Heightmap.Types, long[]> heightmaps,
             Consumer<ClientboundLevelChunkPacketData.BlockEntityTagOutput> consumer,
             CallbackInfoReturnable<LevelChunk> cir) {
         if (LocalChunkBatchPacing.ENABLED) {
@@ -112,7 +113,7 @@ public abstract class ClientChunkManagerMixin {
             int x,
             int z,
             FriendlyByteBuf buf,
-            CompoundTag nbt,
+            Map<Heightmap.Types, long[]> heightmaps,
             Consumer<ClientboundLevelChunkPacketData.BlockEntityTagOutput> consumer,
             CallbackInfoReturnable<LevelChunk> cir) {
         if (LocalChunkBatchPacing.ENABLED) {
@@ -137,7 +138,7 @@ public abstract class ClientChunkManagerMixin {
             return;
         }
         ClientChunkCache self = (ClientChunkCache) (Object) this;
-        rtxremix$unloadIsReal = self.getChunk(pos.x, pos.z, ChunkStatus.FULL, false) != null;
+        rtxremix$unloadIsReal = self.getChunk(pos.x(), pos.z(), ChunkStatus.FULL, false) != null;
         rtxremix$unloadStartNanos = System.nanoTime();
     }
 

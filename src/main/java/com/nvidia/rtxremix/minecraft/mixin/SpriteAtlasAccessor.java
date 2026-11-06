@@ -10,16 +10,21 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 import java.util.Map;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 
+/**
+ * Sprite table and size of a stitched atlas. The size accessors are not named
+ * {@code getWidth}/{@code getHeight}: the atlas declares package-private methods
+ * with exactly those signatures.
+ */
 @Mixin(TextureAtlas.class)
 public interface SpriteAtlasAccessor {
     @Accessor("texturesByName")
-    Map<ResourceLocation, TextureAtlasSprite> getSprites();
+    Map<Identifier, TextureAtlasSprite> getSprites();
 
     @Accessor("width")
-    int getWidth();
+    int getAtlasWidth();
 
     @Accessor("height")
-    int getHeight();
+    int getAtlasHeight();
 }

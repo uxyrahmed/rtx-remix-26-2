@@ -78,6 +78,36 @@ class WriteOptionsTests(unittest.TestCase):
         self.assertEqual("12", options["simulationDistance"])
         self.assertEqual("1", options["graphicsMode"])
 
+    def test_graphics_mode_is_written_as_the_26_2_graphics_keys(self):
+        fast = self.written_options({"graphicsMode": 0})
+        fancy = self.written_options({"graphicsMode": 1})
+        fabulous = self.written_options({"graphicsMode": 2})
+
+        for options in (fast, fancy, fabulous):
+            self.assertEqual("custom", options["graphicsPreset"])
+        self.assertEqual(("false", "5", "false", "false"), self.graphics_keys(fast))
+        self.assertEqual(("true", "10", "true", "false"), self.graphics_keys(fancy))
+        self.assertEqual(("true", "10", "true", "true"), self.graphics_keys(fabulous))
+
+    def test_an_unknown_graphics_mode_means_fancy_as_in_the_split_fix(self):
+        options = self.written_options({"graphicsMode": 7})
+
+        self.assertEqual(("true", "10", "true", "false"), self.graphics_keys(options))
+
+    def test_a_new_options_file_carries_the_26_2_data_version(self):
+        options = self.written_options({})
+
+        self.assertEqual("4903", options["version"])
+
+    @staticmethod
+    def graphics_keys(options: dict[str, str]) -> tuple[str, str, str, str]:
+        return (
+            options["cutoutLeaves"],
+            options["weatherRadius"],
+            options["vignette"],
+            options["improvedTransparency"],
+        )
+
     def test_shipped_config_keeps_shared_scene_defaults(self):
         render = runner.load_config()["render"]
 

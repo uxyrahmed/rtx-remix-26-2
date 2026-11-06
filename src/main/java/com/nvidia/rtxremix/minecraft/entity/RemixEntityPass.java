@@ -6,7 +6,6 @@ package com.nvidia.rtxremix.minecraft.entity;
 
 import com.nvidia.rtxremix.minecraft.util.ClosestKHeap;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
-import com.nvidia.rtxremix.minecraft.mixin.EntityRenderDispatcherAccessor;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.nvidia.rtxremix.minecraft.ClientViewDistance;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
@@ -20,15 +19,19 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.IntPredicate;
+import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.client.renderer.LightTexture;
-import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.SubmitNodeCollector;
+import net.minecraft.client.renderer.entity.EntityRenderer;
+import net.minecraft.client.renderer.entity.state.EntityRenderState;
+import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
+import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.util.Mth;
+import net.minecraft.world.TickRateManager;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.phys.Vec3;
@@ -37,17 +40,21 @@ import net.minecraft.world.phys.Vec3;
  * Captures entity geometry for Remix and hands it to the submission layer.
  *
  * <p>Entities reach this class two ways. Those vanilla already draws are captured in place:
- * {@code WorldRendererMixin} routes each one to {@code RemixRenderer.renderEntityInPlace},
- * which calls {@link #captureAndSubmit}, so the model is evaluated once rather than once for
- * OpenGL and again here. A path tracer also needs entities the camera cannot see, for shadows
- * and reflections, so {@link #finishFrame} then sweeps the world for entities vanilla skipped
- * and submits them closest-first under a {@code MAX_ENTITIES} budget.
+ * {@code LevelRendererCaptureMixin} routes each render state {@code LevelRenderer.submitEntities}
+ * submits to {@code RemixRenderer.renderEntityInPlace}, which calls {@link #captureInPlace},
+ * so the model is evaluated once, into the capture, rather than once for OpenGL and again
+ * here. A path tracer also needs entities the camera cannot see, for shadows and
+ * reflections, so {@link #finishFrame} then sweeps the world for entities vanilla skipped,
+ * extracts their render states as vanilla would, and submits them closest-first under a
+ * {@code MAX_ENTITIES} budget.
  *
- * <p>Both paths render through the vanilla {@link EntityRenderDispatcher} with a
- * {@link RemixVertexConsumerProvider}, so Minecraft keeps ownership of animation, feature
- * renderers, multi-layer models and modded entities. Distant off-screen entities may replay a
- * cached pose instead of re-running the dispatcher; the world transform is still recomputed
- * every frame, so a reused pose lags an animation but never misplaces an entity.
+ * <p>Both paths submit through the vanilla {@link EntityRenderDispatcher} into a
+ * {@link RemixVertexConsumerProvider}, which evaluates each submitted node on the spot (its
+ * class javadoc describes the 26.x capture), so Minecraft keeps ownership of animation,
+ * render layers, multi-layer models and modded entities. Distant off-screen entities may
+ * replay a cached pose instead of being extracted and submitted again; the world transform
+ * is still recomputed every frame, so a reused pose lags an animation but never misplaces
+ * an entity.
  *
  * <p>Native Remix calls belong to the submitter, not to this class.
  */
@@ -59,7 +66,7 @@ public class RemixEntityPass {
      * Maximum entity candidates considered per frame, to avoid stalling.
      *
      * <p>The bound is on candidates rather than successful captures because the
-     * cost being limited is the vanilla {@code EntityRenderDispatcher.render()}
+     * cost being limited is the vanilla extraction and {@code EntityRenderDispatcher.submit()}
      * call, which a candidate incurs whether or not it emits any vertices.
      * Bounding successes instead would let a crowd of geometry-less entities
      * drive an unbounded number of render calls per frame.
@@ -171,6 +178,10 @@ public class RemixEntityPass {
 
     private final Int2ObjectOpenHashMap<PoseSnapshot> poseSnapshots = new Int2ObjectOpenHashMap<>();
     private final RemixVertexConsumerProvider replayProvider = new RemixVertexConsumerProvider();
+    /** The frame's camera state while the closing sweep runs; renderers read it when submitting. */
+    private CameraRenderState sweepCamera;
+    /** The frame's delta tracker while the closing sweep runs, for per-entity partial ticks. */
+    private DeltaTracker sweepDeltaTracker;
     private ClientLevel snapshotWorld;
     private long sweepFrame;
     private float[] reusableBoneData = new float[0];
@@ -240,40 +251,51 @@ public class RemixEntityPass {
     }
 
     /**
-     * Captures one entity through vanilla's dispatcher and submits it immediately.
+     * Captures one entity vanilla is submitting this frame, from the render state vanilla
+     * extracted for it, and submits it to Remix immediately; vanilla's own submit of the
+     * state is skipped by the caller when this returns true.
      *
-     * <p>Submitting before the next entity renders is what lets the consumer pool
-     * recycle: a layer's data is consumed before anything can overwrite it.
+     * <p>Submitting before the next entity is captured is what lets the consumer pool
+     * recycle: a layer's data is consumed before anything can overwrite it. A glowing
+     * entity's outline is still submitted to {@code vanillaCollector}, at
+     * {@code (dx, dy, dz)} from the camera, because vanilla draws outlines into a buffer
+     * of its own; see {@link RemixVertexConsumerProvider#forwardOutlinesTo}.
      *
-     * @return true if this frame claimed the entity, false if it was already captured
+     * @param state            the render state {@code LevelRenderer} is submitting
+     * @param camera           the frame's camera state, as vanilla passes it
+     * @param dx               the state's position relative to the camera, x
+     * @param vanillaCollector vanilla's collector for the frame
+     * @return true if the entity is Remix's this frame, false to leave it to vanilla:
+     *         a state that was not extracted from an entity carries no owner
      */
-    public boolean captureAndSubmit(Entity entity, EntityRenderDispatcher dispatcher,
-                                    float tickDelta, RemixEntitySubmitter submitter) {
-        return captureAndSubmit(entity, dispatcher, tickDelta, submitter, false);
+    public boolean captureInPlace(EntityRenderState state, CameraRenderState camera,
+                                  double dx, double dy, double dz,
+                                  SubmitNodeCollector vanillaCollector,
+                                  RemixEntitySubmitter submitter) {
+        if (!(((RemixRenderStateOwner) state).rtxremix$owner() instanceof Entity entity)) {
+            return false;
+        }
+        Minecraft client = Minecraft.getInstance();
+        captureAndSubmit(entity, state, camera, client.getEntityRenderDispatcher(),
+                vanillaCollector, dx, dy, dz, submitter, false);
+        return true;
     }
 
-    private boolean captureAndSubmit(Entity entity, EntityRenderDispatcher dispatcher,
-                                     float tickDelta, RemixEntitySubmitter submitter,
-                                     boolean snapshotPose) {
+    private boolean captureAndSubmit(Entity entity, EntityRenderState state, CameraRenderState camera,
+                                     EntityRenderDispatcher dispatcher,
+                                     SubmitNodeCollector outlineTarget, double dx, double dy, double dz,
+                                     RemixEntitySubmitter submitter, boolean snapshotPose) {
         if (!capturedIds.add(entity.getId())) {
             return false;
         }
         long captureStart = System.nanoTime();
-        // Remix traces shadows from the scene lights, so vanilla's blob shadow
-        // quads have no consumer. Suppress them rather than capture and drop them.
-        boolean hadShadows =
-                ((EntityRenderDispatcherAccessor) dispatcher)
-                        .rtxremix$getRenderShadows();
-        dispatcher.setRenderShadow(false);
         EntityCaptureResult result;
         try {
-            result = renderOneEntity(entity, dispatcher, tickDelta,
+            result = submitOneEntity(entity, state, camera, dispatcher, outlineTarget, dx, dy, dz,
                     isFirstPersonLocalPlayer(Minecraft.getInstance(), entity));
         } catch (Exception e) {
             LOGGER.error("Error capturing entity {}: {}", entity.getType(), e.getMessage());
             return true;
-        } finally {
-            dispatcher.setRenderShadow(hadShadows);
         }
         long captured = System.nanoTime();
         frameCaptureNanos += captured - captureStart;
@@ -385,6 +407,7 @@ public class RemixEntityPass {
                 captureOffFrustum(world, cameraPos, tickDelta, dispatcher, submitter);
             }
         }
+        sweepCamera = null;
         evictStalePoseSnapshots();
 
         if (++typeLogFrames >= TYPE_LOG_INTERVAL) {
@@ -458,6 +481,9 @@ public class RemixEntityPass {
             entityHeap.offer(entity, sweepPriority(distSq, ownsLight));
         }
         int drawsBefore = frameDraws;
+        Minecraft client = Minecraft.getInstance();
+        sweepCamera = client.gameRenderer.gameRenderState().levelRenderState.cameraRenderState;
+        sweepDeltaTracker = client.getDeltaTracker();
         try {
             int skipped = entityHeap.overflowCount();
             if (skipped > 0) {
@@ -486,6 +512,7 @@ public class RemixEntityPass {
             // Release the references immediately: a world switch between frames
             // would otherwise keep the unloaded ClientWorld reachable through them.
             entityHeap.clear();
+            sweepDeltaTracker = null;
         }
     }
 
@@ -564,6 +591,7 @@ public class RemixEntityPass {
     private boolean submitOffFrustum(Entity entity, Vec3 cameraPos, float tickDelta,
                                      EntityRenderDispatcher dispatcher,
                                      RemixEntitySubmitter submitter) {
+        float partialTick = entityPartialTick(entity, tickDelta);
         boolean far = entity.distanceToSqr(cameraPos) > POSE_REUSE_MIN_SQ;
         if (far) {
             PoseSnapshot snapshot = poseSnapshots.get(entity.getId());
@@ -575,7 +603,7 @@ public class RemixEntityPass {
                     || sweepFrame - snapshot.frame >= POSE_REFRESH_FRAMES
                     || Math.floorMod(entity.getId() + sweepFrame, POSE_REFRESH_FRAMES) == 0;
             if (!dueRefresh && capturedIds.add(entity.getId())) {
-                if (replayPose(entity, snapshot, tickDelta, submitter)) {
+                if (replayPose(entity, snapshot, partialTick, submitter)) {
                     frameOffReused++;
                     return true;
                 }
@@ -584,7 +612,54 @@ public class RemixEntityPass {
                 capturedIds.remove(entity.getId());
             }
         }
-        return captureAndSubmit(entity, dispatcher, tickDelta, submitter, far);
+        if (capturedIds.contains(entity.getId())) {
+            return false;
+        }
+        EntityRenderState state;
+        try {
+            state = extractForSweep(dispatcher, entity, partialTick);
+        } catch (Exception e) {
+            LOGGER.error("Error extracting entity {}: {}", entity.getType(), e.getMessage());
+            capturedIds.add(entity.getId());
+            return false;
+        }
+        return captureAndSubmit(entity, state, sweepCamera, dispatcher, null, 0.0, 0.0, 0.0,
+                submitter, far);
+    }
+
+    /**
+     * The partial tick vanilla's extraction uses for {@code entity}: the frame's, unless
+     * the tick-rate manager has the entity frozen.
+     */
+    private float entityPartialTick(Entity entity, float tickDelta) {
+        DeltaTracker deltaTracker = sweepDeltaTracker;
+        if (deltaTracker == null) {
+            return tickDelta;
+        }
+        TickRateManager tickRateManager = entity.level().tickRateManager();
+        return deltaTracker.getGameTimeDeltaPartialTick(!tickRateManager.isEntityFrozen(entity));
+    }
+
+    /**
+     * Extracts the render state of an entity vanilla culled, the way
+     * {@code LevelExtractor} extracts the visible ones, but without the closing
+     * {@code finalizeRenderState}, whose only work is the blob shadow Remix replaces with
+     * traced shadows. A first-tick entity gets vanilla's interpolation fix-up first, or
+     * it would be drawn between its spawn point and the origin.
+     */
+    @SuppressWarnings("unchecked")
+    private static EntityRenderState extractForSweep(EntityRenderDispatcher dispatcher, Entity entity,
+                                                     float partialTick) {
+        if (entity.tickCount == 0) {
+            entity.xOld = entity.getX();
+            entity.yOld = entity.getY();
+            entity.zOld = entity.getZ();
+        }
+        EntityRenderer<Entity, EntityRenderState> renderer =
+                (EntityRenderer<Entity, EntityRenderState>) (EntityRenderer<?, ?>) dispatcher.getRenderer(entity);
+        EntityRenderState state = renderer.createRenderState();
+        renderer.extractRenderState(entity, state, partialTick);
+        return state;
     }
 
     /**
@@ -683,7 +758,7 @@ public class RemixEntityPass {
         EntityCaptureResult result = new EntityCaptureResult(
                 entity,
                 entity.getPosition(tickDelta),
-                Mth.lerp(tickDelta, entity.yRotO, entity.getYRot()),
+                entity.getYRot(tickDelta),
                 layers,
                 snapshot.boneData,
                 snapshot.boneCount,
@@ -716,28 +791,36 @@ public class RemixEntityPass {
     }
 
     /**
-     * Renders a single entity through vanilla's pipeline and captures the result.
+     * Submits a single entity's render state through vanilla's dispatcher into the
+     * capture and returns what it captured.
      *
-     * <p>The entity is dispatched at the origin so the captured rigid transforms
-     * carry only model and pivot rotations. The world position rides on the Remix
-     * instance transform instead, so it is applied exactly once.
+     * <p>The state is submitted at the origin so the captured rigid transforms carry
+     * only model and pivot rotations. The world position, the interpolated position the
+     * state was extracted with, rides on the Remix instance transform instead, so it is
+     * applied exactly once.
+     *
+     * @param outlineTarget vanilla's collector, which still draws the outline of a glowing
+     *                      entity, or null when vanilla does not render this entity
      */
-    private EntityCaptureResult renderOneEntity(Entity entity,
-                                                 EntityRenderDispatcher dispatcher,
-                                                 float tickDelta,
-                                                 boolean firstPersonLocalPlayer) {
-        Vec3 entityPos = entity.getPosition(tickDelta);
-        float yaw = Mth.lerp(tickDelta, entity.yRotO, entity.getYRot());
-
-        // Light is discarded by the capture; any value reaches the same result.
-        int light = LightTexture.FULL_BRIGHT;
+    private EntityCaptureResult submitOneEntity(Entity entity,
+                                                EntityRenderState state,
+                                                CameraRenderState camera,
+                                                EntityRenderDispatcher dispatcher,
+                                                SubmitNodeCollector outlineTarget,
+                                                double dx, double dy, double dz,
+                                                boolean firstPersonLocalPlayer) {
+        Vec3 entityPos = new Vec3(state.x, state.y, state.z);
+        float yaw = entity.getYRot();
 
         provider.beginEntity();
+        if (outlineTarget != null && state.appearsGlowing()) {
+            provider.forwardOutlinesTo(outlineTarget, dx, dy, dz);
+        }
         EntityRenderContext ctx = EntityRenderContext.get();
 
         sharedMatrices.pushPose();
         try {
-            dispatcher.render(entity, 0.0, 0.0, 0.0, yaw, tickDelta, sharedMatrices, provider, light);
+            dispatcher.submit(state, camera, 0.0, 0.0, 0.0, sharedMatrices, provider);
         } finally {
             // Both reset even if a renderer threw mid-traversal, which skips the
             // dispatcher's RETURN hook: the identity root returns every pooled

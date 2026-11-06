@@ -41,6 +41,8 @@ public final class GlInterop {
     private long lastWaitedVkDoneSemaphoreValue = -1;
     private int[] barrierTextures = new int[0];
     private int[] barrierLayouts = new int[0];
+    /** Read framebuffer for {@link #copyFromTexture}; created on first use. */
+    private int sourceFbo;
 
     public GlInterop(InteropInfo interopInfo) {
         if (interopInfo.dxvkDoneSemaphore_Handle == 0
@@ -150,11 +152,24 @@ public final class GlInterop {
         glFlush();
     }
 
-    public void copyFromFramebuffer(int sourceFbo) {
+    /**
+     * Copies an OpenGL texture, Minecraft's main color target, into the shared color
+     * image. Since 26.2 render targets are Blaze3d textures without a framebuffer of
+     * their own, so the texture is attached to a framebuffer owned here. It is
+     * attached again every call: a resize deletes the old texture, and OpenGL may hand
+     * the same name to its replacement.
+     */
+    public void copyFromTexture(int sourceTexture) {
         drainStaleGlErrors();
-        if (!colorImage.available()) {
+        if (!colorImage.available() || sourceTexture == 0) {
             return;
         }
+        if (sourceFbo == 0) {
+            sourceFbo = glCreateFramebuffers();
+            checkGlError("glCreateFramebuffers(source)");
+        }
+        glNamedFramebufferTexture(sourceFbo, GL_COLOR_ATTACHMENT0, sourceTexture, 0);
+        checkGlError("glNamedFramebufferTexture(source)");
         int destinationFbo = colorImage.framebuffer();
         glBlitNamedFramebuffer(
                 sourceFbo,
@@ -195,6 +210,10 @@ public final class GlInterop {
     public void destroy() {
         colorImage.destroy();
         depthImage.destroy();
+        if (sourceFbo != 0) {
+            glDeleteFramebuffers(sourceFbo);
+            sourceFbo = 0;
+        }
         if (vkDoneSemaphore != 0) {
             glDeleteSemaphoresEXT(vkDoneSemaphore);
             vkDoneSemaphore = 0;

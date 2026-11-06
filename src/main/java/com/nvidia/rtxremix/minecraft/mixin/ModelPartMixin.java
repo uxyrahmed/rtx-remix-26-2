@@ -4,7 +4,6 @@
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
-import com.google.common.collect.ImmutableList;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -32,7 +31,7 @@ import net.minecraft.client.renderer.SpriteCoordinateExpander;
  * does for its flag, is honoured. The entity pass and the block-entity pass both
  * render on such a stack.
  *
- * <p>{@code renderCuboids} on a single-cuboid part borrows the capturing consumer's
+ * <p>{@code compile} on a single-cube part borrows the capturing consumer's
  * singleton iterator instead of allocating vanilla's. The consumer is found directly
  * or behind the {@link SpriteCoordinateExpander} that sprite-atlas models draw
  * through, the same one-step look-through {@code CuboidMixin} applies. Sprite-wrapped
@@ -84,11 +83,10 @@ public abstract class ModelPartMixin {
         VertexConsumer target = vertexConsumer instanceof SpriteCoordinateExpander wrapped
                 ? wrapped.delegate
                 : vertexConsumer;
-        // Local reads first: the cuboid count and list type reject group and
-        // multi-cuboid parts before the capture check pays for its thread-local lookup.
+        // Local reads first: the cube count and list class reject group and
+        // multi-cube parts before the capture check pays for its thread-local lookup.
         if (target instanceof RemixCapturingConsumer consumer
-                && cuboids.size() == 1
-                && cuboids instanceof ImmutableList<?>
+                && RemixCapturingConsumer.isImmutableSingleton(cuboids)
                 && consumer.isRemixCaptureActive()) {
             Iterator<ModelPart.Cube> iterator =
                     consumer.acquireSingletonCuboidIterator(cuboids.getFirst());

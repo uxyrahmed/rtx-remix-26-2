@@ -376,7 +376,7 @@ public class BenchmarkController {
     }
 
     private String describeCurrentScreen(Minecraft client) {
-        return client.screen == null ? "none" : client.screen.getClass().getName();
+        return client.gui.screen() == null ? "none" : client.gui.screen().getClass().getName();
     }
 
     static boolean isWorldLoadScreenName(String screenSimpleName) {
@@ -384,8 +384,8 @@ public class BenchmarkController {
     }
 
     private boolean isWorldLoadScreen(Minecraft client) {
-        if (client.screen == null) return false;
-        return isWorldLoadScreenName(client.screen.getClass().getSimpleName());
+        if (client.gui.screen() == null) return false;
+        return isWorldLoadScreenName(client.gui.screen().getClass().getSimpleName());
     }
 
     private void maybeFallbackFromQuickPlay(Minecraft client) {
@@ -594,7 +594,7 @@ public class BenchmarkController {
 
     private void notifyPlayer(Minecraft client, String message) {
         if (client.player != null) {
-            client.player.displayClientMessage(Component.literal("[Benchmark] " + message), false);
+            client.player.sendSystemMessage(Component.literal("[Benchmark] " + message));
         }
     }
 
@@ -1027,8 +1027,8 @@ public class BenchmarkController {
         resetBenchmarkStatus();
         state = State.STILLS;
         currentFrame = 0;
-        hudHiddenBeforeStills = client.options.hideGui;
-        client.options.hideGui = true;
+        hudHiddenBeforeStills = client.gui.hud.isHidden();
+        setHudHidden(client, true);
         LOGGER.info("Still shot capture starting: {} shot(s) from set '{}', settle {}",
                 shots.size(), shotSetName, shotSettle);
         writeBenchmarkStatus("stills-start", true);
@@ -1062,7 +1062,7 @@ public class BenchmarkController {
             boolean raining = shot.weather() != StillShot.Weather.CLEAR;
             boolean thundering = shot.weather() == StillShot.Weather.THUNDER;
             // A day of each so the weather cannot flip while the shot settles.
-            server.execute(() -> server.overworld().setWeatherParameters(raining ? 0 : WEATHER_HOLD_TICKS,
+            server.execute(() -> server.setWeatherParameters(raining ? 0 : WEATHER_HOLD_TICKS,
                     raining ? WEATHER_HOLD_TICKS : 0, raining, thundering));
         }
         if (RtxRemixMod.isRtxEnabled() != shot.rtxEnabled()) {
@@ -1159,7 +1159,8 @@ public class BenchmarkController {
         Screenshot.grab(
                 benchmarkDir.toFile(),
                 shot.name() + ".png",
-                client.getMainRenderTarget(),
+                client.gameRenderer.mainRenderTarget(),
+                1,
                 text -> {
                     // Runs on the IO worker after the encode; the file is the
                     // verdict, not the message text.
@@ -1190,12 +1191,19 @@ public class BenchmarkController {
         if (stillShots == null) {
             return;
         }
-        if (client != null && client.options != null) {
-            client.options.hideGui = hudHiddenBeforeStills;
+        if (client != null && client.gui != null) {
+            setHudHidden(client, hudHiddenBeforeStills);
         }
         stillShots = null;
         stillShotColumns = -1;
         captureStillShotAtFrameEnd = false;
+    }
+
+    /** The HUD's hidden state is the F1 toggle, so it is set by toggling when it differs. */
+    private static void setHudHidden(Minecraft client, boolean hidden) {
+        if (client.gui.hud.isHidden() != hidden) {
+            client.gui.hud.toggle();
+        }
     }
 
     // --- Data capture ---
@@ -1333,7 +1341,8 @@ public class BenchmarkController {
         Screenshot.grab(
                 benchmarkDir.toFile(),
                 filename,
-                client.getMainRenderTarget(),
+                client.gameRenderer.mainRenderTarget(),
+                1,
                 text -> LOGGER.info("Screenshot: {}", text.getString())
         );
     }
@@ -1407,7 +1416,7 @@ public class BenchmarkController {
         metadata.addProperty("renderDistance", mc.options.renderDistance().get());
         metadata.addProperty("simulationDistance", mc.options.simulationDistance().get());
         metadata.addProperty("fov", mc.options.fov().get());
-        metadata.addProperty("graphicsMode", mc.options.graphicsMode().get().toString());
+        metadata.addProperty("graphicsMode", mc.options.graphicsPreset().get().getSerializedName());
         metadata.addProperty("entityDistanceScaling", mc.options.entityDistanceScaling().get());
         root.add("metadata", metadata);
 

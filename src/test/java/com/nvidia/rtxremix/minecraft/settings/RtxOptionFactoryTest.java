@@ -8,8 +8,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
-import java.lang.reflect.Field;
 import java.util.List;
+import java.util.Optional;
 import java.util.regex.Pattern;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.network.chat.contents.TranslatableContents;
@@ -139,6 +139,21 @@ class RtxOptionFactoryTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void deferredIntegerSlidersStillStepOneValueAtATime() {
+        RtxSetting<Integer> integerSetting =
+                RtxSetting.ofInt("t.int", SettingGroup.RENDER_DISTANCE, "k", "k.tip",
+                        0, 10, 5, () -> 5, value -> { })
+                        .deferSliderApply();
+        var callbacks = (OptionInstance.SliderableValueSet<Integer>)
+                sliderCallbacks(toOption(integerSetting));
+
+        assertEquals(Optional.of(6), callbacks.next(5));
+        assertEquals(Optional.of(4), callbacks.previous(5));
+        assertEquals(Optional.of(10), callbacks.next(10));
+    }
+
+    @Test
     void immediateSliderPolicyPreservesTheOriginalCallbacks() {
         var callbacks = OptionInstance.UnitDouble.INSTANCE;
 
@@ -147,13 +162,7 @@ class RtxOptionFactoryTest {
     }
 
     private static OptionInstance.SliderableValueSet<?> sliderCallbacks(OptionInstance<?> option) {
-        try {
-            Field callbacksField = OptionInstance.class.getDeclaredField("values");
-            callbacksField.setAccessible(true);
-            return (OptionInstance.SliderableValueSet<?>) callbacksField.get(option);
-        } catch (ReflectiveOperationException e) {
-            throw new AssertionError("Could not inspect OptionInstance values", e);
-        }
+        return (OptionInstance.SliderableValueSet<?>) option.values();
     }
 
     @ParameterizedTest
