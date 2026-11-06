@@ -70,7 +70,8 @@ through Remix must be checked in game on Windows with an RTX GPU; the
 | Mixin audit | All 76 mixins apply to every target; also run with `mixin.debug.countInjections` and `mixin.debug.strict` |
 | Python tools (`tools\rtx.bat check --tests`) | Format and lint clean; 1259 passed, 1 skipped |
 | `runClient` without the Remix runtime | Loaded a world and ran in it for a minute with no errors from the mod |
-| Native bridge, `package`, path tracing | Not run: no Visual Studio C++ tools on the porting machine; CI's Windows runners build the bridge |
+| CI on the pull request (`windows-latest`) | `build test` with the native step: `remixbridge.dll` compiled, the pinned runtime fetched and staged, all tests passed; the tools `check` job and both Forge jobs passed |
+| `package`, path tracing in game | Not run: the porting machine has no Visual Studio C++ tools, so no bridge to launch with |
 
 The test count went from 835 JVM and 11 Fabric tests to 818 and 7. Four test
 classes went with the code they tested (`ChunkSlotMoveLogTest`,
