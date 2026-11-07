@@ -309,7 +309,7 @@ GPU or architecture does not apply to a JFR-only run.
 paid at that API call rather than sky computation. Check surrounding
 `Interop.VKToGL`, `Interop.GLToVK`, `Remix.Present`, and
 `MinecraftClient.render.swapBuffers` spans; moving a sync point can relabel
-the same wait without removing it. `RenderSystemMixin` defines the current
+the same wait without removing it. `GlSurfaceMixin` defines the current
 swap/present redirection. Turning the sky off also removes its dome light and
 changes GPU lighting work, so it is not a CPU-only control.
 
