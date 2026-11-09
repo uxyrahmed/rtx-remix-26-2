@@ -407,6 +407,7 @@ final class AtmosphericSkyGenerator {
         if (pendingReadbacks == READBACK_RING_SIZE) {
             return;
         }
+        resetPackLayout();
         GL15.glBindBuffer(
                 GL21.GL_PIXEL_PACK_BUFFER,
                 readbackBuffers[readbackWriteIndex]);
@@ -429,6 +430,21 @@ final class AtmosphericSkyGenerator {
         readbackWriteIndex =
                 (readbackWriteIndex + 1) % READBACK_RING_SIZE;
         pendingReadbacks++;
+    }
+
+    /**
+     * Packs the readback as tightly as the buffers are sized. Blaze3D's
+     * {@code copyTextureToBuffer}, which screenshots use, sets the pack row
+     * length to its source width and leaves it there, and with that row
+     * length the panorama overflows its buffer: the read fails with an
+     * invalid PBO operation and the dome keeps whatever the buffer last held.
+     * Blaze3D sets the row length before each of its own reads, so the GL
+     * defaults set here need no restoring.
+     */
+    private static void resetPackLayout() {
+        GL11.glPixelStorei(GL11.GL_PACK_ROW_LENGTH, 0);
+        GL11.glPixelStorei(GL11.GL_PACK_SKIP_ROWS, 0);
+        GL11.glPixelStorei(GL11.GL_PACK_SKIP_PIXELS, 0);
     }
 
     private void destroyReadbackBuffers() {
