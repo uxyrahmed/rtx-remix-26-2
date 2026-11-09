@@ -324,10 +324,11 @@ public final class BlockLightRuleManager {
 
     static LightEntry sphere(Identifier ruleId, int index, BlockState state, BlockPos pos,
                              float x, float y, float z, float radius,
-                             LightEntry.ColorOverride color, Float intensity) {
+                             LightEntry.ColorOverride color, Float intensity,
+                             float volumetricRadianceScale) {
         return LightEntry.sphere(key(pos, ruleId, index), state.getLightEmission(), state.getBlock(),
                 pos.getX() + x, pos.getY() + y, pos.getZ() + z,
-                radius, color, intensity, LightEntry.defaultVolumetricRadianceScale());
+                radius, color, intensity, volumetricRadianceScale);
     }
 
     static LightEntry shapedSphere(Identifier ruleId, int index, BlockState state, BlockPos pos,

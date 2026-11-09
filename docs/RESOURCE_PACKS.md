@@ -212,6 +212,12 @@ else. Replacing a rule takes that baseline away with it, so your authored
 player's own multiplier for that kind still applies on top, so a player can
 still dim or boost your light.
 
+A built-in rule also sets how strongly its light feeds volumetric fog: 1.5
+for torch and candle-sized open flames, 2 for campfires, 0.75 for redstone and
+conduit glows, and 0.35 for amethyst. A replacement without
+`volumetricRadianceScale` takes the 0.5 default, so state the built-in value
+to keep the same glow in fog.
+
 You cannot delete a built-in light from a pack: a rule has to define a light.
 Only the player's Off position removes one.
 
@@ -231,7 +237,8 @@ Recolour the torch, keeping its shape and brightness, at
     "position": { "type": "offset", "x": 0.5, "y": 0.7, "z": 0.5 },
     "radius": 0.08,
     "intensity": 1575.0,
-    "color": [0.2, 0.6, 1.0]
+    "color": [0.2, 0.6, 1.0],
+    "volumetricRadianceScale": 1.5
   }
 }
 ```
@@ -240,6 +247,7 @@ That intensity is what the built-in rule works out to: light level 14, times 5
 radiance per level, times 3 because the emitter is shrunk to 0.08 and has to
 make up the surface area it gave away, times the 7.5x torch baseline. Write
 your own number if you want it brighter or dimmer, but start from that one.
+The volumetric scale is the built-in torch's too.
 
 Give a redstone lamp a light, but only while it is lit, at
 `assets/mypack/rtx_remix/block_lights/redstone_lamp.json`:
@@ -277,8 +285,10 @@ Colour, first match wins (`BlockTextureManager.getLightColorForBlock`):
 
 1. The rule's own `color`.
 2. A curated colour for that vanilla block, from
-   `BlockTextureManager.KNOWN_LIGHT_COLORS`.
-3. Any block whose id contains `candle`, which takes the warm colour.
+   `BlockTextureManager.KNOWN_LIGHT_COLORS`. These are saturated, the way
+   coloured-light shader packs read: lava and magma deep orange, froglights
+   yellow, green and pink, sea lanterns cyan, copper flames green.
+3. Any block whose id contains `candle`, which takes the torch's flame colour.
 4. The brightness-weighted average colour of the block's own sprite. Dark
    pixels count for almost nothing, so a torch takes the colour of its flame
    rather than of its stick.

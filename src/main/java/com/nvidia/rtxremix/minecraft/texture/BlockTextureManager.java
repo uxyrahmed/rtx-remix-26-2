@@ -710,10 +710,17 @@ public class BlockTextureManager {
     private static final String WATER_NORMALS_DDS = "textures/water_normals_flipbook.dds";
     private static final float WATER_TILE_SIZE = 10.0f;
     private static final float DEFAULT_WATER_IOR = 1.33f;
-    private static final float DEFAULT_WATER_TRANSMITTANCE_R = 0.6f;
-    private static final float DEFAULT_WATER_TRANSMITTANCE_G = 0.9f;
-    private static final float DEFAULT_WATER_TRANSMITTANCE_B = 0.89f;
-    private static final float DEFAULT_WATER_TRANSMITTANCE_DISTANCE = 1f;
+    /*
+     * Absorption per 4 blocks of travel, about (0.89, 0.95, 0.98) per block. Red goes first and
+     * green faster than blue, so water is nearly clear over a beach a block deep, teal a few
+     * blocks out, and blue over deep water, the way shader-pack water reads. Light seen through
+     * water crosses it twice, down to the floor and back, so a floor h blocks down is tinted by
+     * a path of a little over 2h.
+     */
+    private static final float DEFAULT_WATER_TRANSMITTANCE_R = 0.64f;
+    private static final float DEFAULT_WATER_TRANSMITTANCE_G = 0.82f;
+    private static final float DEFAULT_WATER_TRANSMITTANCE_B = 0.915f;
+    private static final float DEFAULT_WATER_TRANSMITTANCE_DISTANCE = 4f;
     private static final float WATER_CAMERA_MEDIUM_TRANSMITTANCE = 0.98f;
     private static final float WATER_CAMERA_MEDIUM_TRANSMITTANCE_DISTANCE = 1f;
     private static final String WATER_WHITE_TEXTURE_NAME = "water_white";
@@ -1221,44 +1228,83 @@ public class BlockTextureManager {
     public static final float[] FALLBACK_WARM_WHITE = {1f, 0.95f, 0.9f};
     private final Map<String, float[]> spriteLightColors = new HashMap<>();
 
-    private static final float[] WARM   = {1.00f, 0.57f, 0.30f};
-    private static final float[] SOUL   = {0.45f, 0.73f, 1.00f};
-    private static final float[] RED    = {1.00f, 0.18f, 0.10f};
-    private static final float[] WHITE  = {1.00f, 1.00f, 1.00f};
-    private static final float[] GREEN  = {0.50f, 0.80f, 0.40f};
-    private static final float[] PURPLE = {0.70f, 0.50f, 0.90f};
-    private static final float[] SCULK  = {0.20f, 0.50f, 0.80f};
-    private static final float[] COPPER = {0.85f, 1.00f, 0.90f};
+    /*
+     * Linear RGB, saturated the way coloured-light shader packs read: a light keeps the hue of
+     * what burns or glows rather than the paler average of its texture. FLAME, SOUL,
+     * COPPER_FLAME, REDSTONE and AMETHYST match BlockLightDefaults, so a held lantern burns like
+     * a torch, a held soul lantern like a soul torch, and a held copper lantern like a copper torch.
+     */
+    private static final float[] FLAME        = {1.00f, 0.35f, 0.10f};
+    private static final float[] SOUL         = {0.15f, 0.55f, 1.00f};
+    private static final float[] COPPER_FLAME = {0.35f, 1.00f, 0.32f};
+    private static final float[] REDSTONE     = {1.00f, 0.06f, 0.02f};
+    private static final float[] AMETHYST     = {0.60f, 0.28f, 1.00f};
+    private static final float[] MOLTEN       = {1.00f, 0.25f, 0.04f};
+    private static final float[] GLOWSTONE    = {1.00f, 0.62f, 0.26f};
+    private static final float[] LAMP         = {1.00f, 0.58f, 0.28f};
+    private static final float[] PUMPKIN      = {1.00f, 0.48f, 0.10f};
+    private static final float[] SHROOMLIGHT  = {1.00f, 0.42f, 0.13f};
+    private static final float[] OCHRE        = {1.00f, 0.76f, 0.30f};
+    private static final float[] VERDANT      = {0.50f, 1.00f, 0.45f};
+    private static final float[] PEARLESCENT  = {1.00f, 0.55f, 0.90f};
+    private static final float[] SEA_LANTERN  = {0.55f, 0.92f, 1.00f};
+    private static final float[] AQUA         = {0.45f, 0.90f, 1.00f};
+    private static final float[] END_LIGHT    = {1.00f, 0.92f, 0.96f};
+    private static final float[] VOID_PURPLE  = {0.50f, 0.15f, 1.00f};
+    private static final float[] LICHEN       = {0.55f, 1.00f, 0.70f};
+    private static final float[] BIOLUMINESCENT = {0.55f, 1.00f, 0.45f};
+    private static final float[] GLOW_BERRY   = {1.00f, 0.78f, 0.22f};
+    private static final float[] FIREFLY      = {1.00f, 0.95f, 0.45f};
+    private static final float[] SCULK        = {0.15f, 0.75f, 0.90f};
+    private static final float[] WHITE        = {1.00f, 1.00f, 1.00f};
 
     /** Curated colors for vanilla light-emitting blocks. */
     private static final Map<String, float[]> KNOWN_LIGHT_COLORS = Map.ofEntries(
-            Map.entry("torch", WARM), Map.entry("wall_torch", WARM),
-            Map.entry("lantern", WARM), Map.entry("campfire", WARM),
-            Map.entry("furnace", WARM), Map.entry("smoker", WARM),
-            Map.entry("blast_furnace", WARM), Map.entry("brewing_stand", WARM),
-            Map.entry("cave_vines", WARM), Map.entry("cave_vines_plant", WARM),
+            Map.entry("torch", FLAME), Map.entry("wall_torch", FLAME),
+            Map.entry("lantern", FLAME), Map.entry("campfire", FLAME), Map.entry("fire", FLAME),
+            Map.entry("furnace", FLAME), Map.entry("smoker", FLAME),
+            Map.entry("blast_furnace", FLAME), Map.entry("brewing_stand", FLAME),
 
             Map.entry("soul_torch", SOUL), Map.entry("soul_wall_torch", SOUL),
-            Map.entry("soul_lantern", SOUL), Map.entry("soul_campfire", SOUL),
+            Map.entry("soul_lantern", SOUL), Map.entry("soul_campfire", SOUL), Map.entry("soul_fire", SOUL),
 
-            Map.entry("redstone_torch", RED), Map.entry("redstone_wall_torch", RED),
+            Map.entry("copper_torch", COPPER_FLAME), Map.entry("copper_wall_torch", COPPER_FLAME),
+            Map.entry("copper_lantern", COPPER_FLAME), Map.entry("waxed_copper_lantern", COPPER_FLAME),
+            Map.entry("exposed_copper_lantern", COPPER_FLAME), Map.entry("waxed_exposed_copper_lantern", COPPER_FLAME),
+            Map.entry("weathered_copper_lantern", COPPER_FLAME), Map.entry("waxed_weathered_copper_lantern", COPPER_FLAME),
+            Map.entry("oxidized_copper_lantern", COPPER_FLAME), Map.entry("waxed_oxidized_copper_lantern", COPPER_FLAME),
 
-            Map.entry("end_rod", WHITE), Map.entry("beacon", WHITE),
-            Map.entry("conduit", WHITE),
+            Map.entry("redstone_torch", REDSTONE), Map.entry("redstone_wall_torch", REDSTONE),
+            Map.entry("redstone_ore", REDSTONE), Map.entry("deepslate_redstone_ore", REDSTONE),
 
-            Map.entry("glow_lichen", GREEN),
+            Map.entry("lava", MOLTEN), Map.entry("magma_block", MOLTEN),
+            Map.entry("glowstone", GLOWSTONE), Map.entry("shroomlight", SHROOMLIGHT),
+            Map.entry("jack_o_lantern", PUMPKIN), Map.entry("redstone_lamp", LAMP),
+            Map.entry("ochre_froglight", OCHRE), Map.entry("verdant_froglight", VERDANT),
+            Map.entry("pearlescent_froglight", PEARLESCENT),
+            Map.entry("sea_lantern", SEA_LANTERN), Map.entry("conduit", AQUA), Map.entry("beacon", AQUA),
 
-            Map.entry("amethyst_cluster", PURPLE), Map.entry("large_amethyst_bud", PURPLE),
-            Map.entry("medium_amethyst_bud", PURPLE), Map.entry("small_amethyst_bud", PURPLE),
-            Map.entry("respawn_anchor", PURPLE), Map.entry("dragon_egg", PURPLE),
+            Map.entry("end_rod", END_LIGHT), Map.entry("end_portal", END_LIGHT),
+            Map.entry("end_gateway", END_LIGHT), Map.entry("light", WHITE),
+
+            Map.entry("nether_portal", VOID_PURPLE), Map.entry("crying_obsidian", VOID_PURPLE),
+            Map.entry("respawn_anchor", VOID_PURPLE), Map.entry("dragon_egg", VOID_PURPLE),
+            Map.entry("enchanting_table", VOID_PURPLE), Map.entry("ender_chest", VOID_PURPLE),
+
+            Map.entry("amethyst_cluster", AMETHYST), Map.entry("large_amethyst_bud", AMETHYST),
+            Map.entry("medium_amethyst_bud", AMETHYST), Map.entry("small_amethyst_bud", AMETHYST),
+
+            Map.entry("glow_lichen", LICHEN), Map.entry("sea_pickle", BIOLUMINESCENT),
+            Map.entry("cave_vines", GLOW_BERRY), Map.entry("cave_vines_plant", GLOW_BERRY),
+            Map.entry("firefly_bush", FIREFLY),
 
             Map.entry("sculk_sensor", SCULK), Map.entry("calibrated_sculk_sensor", SCULK),
             Map.entry("sculk_catalyst", SCULK),
 
-            Map.entry("copper_bulb", COPPER), Map.entry("waxed_copper_bulb", COPPER),
-            Map.entry("exposed_copper_bulb", COPPER), Map.entry("waxed_exposed_copper_bulb", COPPER),
-            Map.entry("weathered_copper_bulb", COPPER), Map.entry("waxed_weathered_copper_bulb", COPPER),
-            Map.entry("oxidized_copper_bulb", COPPER), Map.entry("waxed_oxidized_copper_bulb", COPPER)
+            Map.entry("copper_bulb", LAMP), Map.entry("waxed_copper_bulb", LAMP),
+            Map.entry("exposed_copper_bulb", LAMP), Map.entry("waxed_exposed_copper_bulb", LAMP),
+            Map.entry("weathered_copper_bulb", LAMP), Map.entry("waxed_weathered_copper_bulb", LAMP),
+            Map.entry("oxidized_copper_bulb", LAMP), Map.entry("waxed_oxidized_copper_bulb", LAMP)
     );
 
     /**
@@ -1292,7 +1338,7 @@ public class BlockTextureManager {
         float[] known = KNOWN_LIGHT_COLORS.get(path);
         if (known != null) return known;
 
-        if (path.contains("candle")) return WARM;
+        if (path.contains("candle")) return FLAME;
 
         float[] derived = spriteLightColors.get(id.getNamespace() + ":block/" + path);
         return derived != null ? derived : FALLBACK_WARM_WHITE;
