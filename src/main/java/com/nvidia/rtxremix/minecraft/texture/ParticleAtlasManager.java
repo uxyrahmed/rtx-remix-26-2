@@ -183,6 +183,7 @@ public class ParticleAtlasManager {
         }
 
         boolean hasAnyNormal = false, hasAnyHeight = false, hasAnyEmissive = false;
+        int smallestHeightSprite = Integer.MAX_VALUE;
 
         for (var entry : sprites.entrySet()) {
             TextureAtlasSprite sprite = entry.getValue();
@@ -201,6 +202,7 @@ public class ParticleAtlasManager {
                     LabPBRConverter.applyAO(albedoRGBA, atlasW, nImg, pixX, pixY, pixW, pixH);
                     hasAnyNormal = true;
                     hasAnyHeight = true;
+                    smallestHeightSprite = Math.min(smallestHeightSprite, Math.min(pixW, pixH));
                 }
                 if (sImg != null) {
                     LabPBRConverter.blitRoughness(roughnessAtlas, atlasW, sImg, pixX, pixY, pixW, pixH);
@@ -226,8 +228,11 @@ public class ParticleAtlasManager {
         RemixTexture normalTex = hasAnyNormal
                 ? uploadTexture(name + "_normal", normalAtlas, atlasW, atlasH,
                         TextureFormat.RGBA8_UNORM, TexturePurpose.NORMAL_DX) : null;
+        int heightRepeat = hasAnyHeight
+                ? LabPBRConverter.heightMapRepeat(Math.max(atlasW, atlasH), smallestHeightSprite) : 1;
         RemixTexture heightTex = hasAnyHeight
-                ? uploadTexture(name + "_height", heightAtlas, atlasW, atlasH,
+                ? uploadTexture(name + "_height", LabPBRConverter.repeatTexels(heightAtlas, atlasW, atlasH, heightRepeat),
+                        atlasW * heightRepeat, atlasH * heightRepeat,
                         TextureFormat.R8_UNORM, TexturePurpose.HEIGHTMAP) : null;
         RemixTexture roughnessTex = uploadTexture(name + "_roughness",
                 roughnessAtlas, atlasW, atlasH, TextureFormat.R8_UNORM, TexturePurpose.DATA);

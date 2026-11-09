@@ -4,11 +4,14 @@
  */
 package com.nvidia.rtxremix.minecraft.texture;
 
+import com.mojang.blaze3d.platform.NativeImage;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LabPBRConverterTest {
@@ -92,6 +95,86 @@ class LabPBRConverterTest {
         assertEquals(100, untouched[1] & 0xFF, "gain 1 is a no-op");
     }
 
+    @Test
+    void smoothnessBecomesThePerceptualRoughnessThatRemixSquaresItself() {
+        // Remix squares its roughness input into GGX alpha, so the complement of LabPBR's
+        // perceptual smoothness goes through unsquared, from the atlas blit and the
+        // animation table alike.
+        try (NativeImage specular = new NativeImage(3, 1, true)) {
+            specular.setPixelABGR(0, 0, 0xFF000000);
+            specular.setPixelABGR(1, 0, 0xFF000080);
+            specular.setPixelABGR(2, 0, 0xFF0000FF);
+
+            byte[] blitted = new byte[3];
+            LabPBRConverter.blitRoughness(blitted, 3, specular, 0, 0, 3, 1);
+            byte[] table = LabPBRConverter.buildSRoughnessTable(specular);
+
+            for (byte[] roughness : new byte[][] {blitted, table}) {
+                assertEquals(255, unsigned(roughness[0]), "smoothness 0 is fully rough");
+                assertEquals(127, unsigned(roughness[1]), "smoothness 128");
+                assertEquals(0, unsigned(roughness[2]), "smoothness 255 is a mirror");
+            }
+        }
+    }
+
+    @Test
+    void normalsKeepTheirAuthoredTiltWhenReadAsRgbTimesTwoMinusOne() {
+        // Remix reads a three-channel tangent-space normal as normalize(rgb * 2 - 1). A texel
+        // tilted to x = 0.6 must come back with z = 0.8, not steeper, and a flat one with z = 1.
+        try (NativeImage normal = new NativeImage(2, 1, true)) {
+            normal.setPixelABGR(0, 0, 0xFF0080CC);
+            normal.setPixelABGR(1, 0, 0xFF008080);
+
+            byte[] rgba = new byte[8];
+            LabPBRConverter.blitNormal(rgba, 2, normal, 0, 0, 2, 1);
+
+            assertEquals(0.6, snorm(rgba[0]), 0.01, "tilted x");
+            assertEquals(0.8, snorm(rgba[2]), 0.01, "tilted z");
+            assertEquals(1.0, snorm(rgba[6]), 0.01, "flat z");
+        }
+    }
+
+    @Test
+    void heightMapRepeatFitsTheQuadtreeStartCellToTheSmallestSprite() {
+        assertEquals(4, LabPBRConverter.heightMapRepeat(2048, 16), "a 16x block atlas starts on 32-texel cells");
+        assertEquals(2, LabPBRConverter.heightMapRepeat(1024, 16), "a 1024-texel atlas of 16x sprites");
+        assertEquals(1, LabPBRConverter.heightMapRepeat(4096, 64), "64x sprites already fit");
+        assertEquals(1, LabPBRConverter.heightMapRepeat(8192, 16), "nothing fits within the size limit");
+    }
+
+    @Test
+    void repeatTexelsRepeatsEveryTexelInBothDirections() {
+        byte[] map = bytes(
+                1, 2,
+                3, 4);
+        assertArrayEquals(bytes(
+                1, 1, 2, 2,
+                1, 1, 2, 2,
+                3, 3, 4, 4,
+                3, 3, 4, 4), LabPBRConverter.repeatTexels(map, 2, 2, 2));
+        assertSame(map, LabPBRConverter.repeatTexels(map, 2, 2, 1), "a repeat of 1 passes the map through");
+    }
+
+    @Test
+    void scatteringCoverageIsTheShareOfOpaqueTexelsThatScatter() {
+        // A 4x1 region: opaque and scattering, opaque and not, transparent and scattering
+        // (not counted at all), opaque and barely scattering.
+        byte[] sss = bytes(
+                200, 200, 200, 255,
+                0, 0, 0, 255,
+                200, 200, 200, 255,
+                1, 1, 1, 255);
+        byte[] albedo = bytes(
+                90, 90, 90, 255,
+                90, 90, 90, 255,
+                90, 90, 90, 0,
+                90, 90, 90, 255);
+
+        assertEquals(2f / 3f, LabPBRConverter.scatteringCoverage(sss, albedo, 4, 0, 0, 4, 1), 1e-6f);
+        assertEquals(0f, LabPBRConverter.scatteringCoverage(sss, albedo, 4, 2, 0, 1, 1), 0f,
+                "a region with no opaque texels scatters nowhere");
+    }
+
     private static void putPixel(ByteBuffer buffer, int pixelIndex, int r, int g, int b, int a) {
         int offset = pixelIndex * 4;
         buffer.put(offset, (byte) r);
@@ -110,5 +193,9 @@ class LabPBRConverterTest {
 
     private static int unsigned(byte value) {
         return value & 0xFF;
+    }
+
+    private static double snorm(byte value) {
+        return unsigned(value) / 255.0 * 2.0 - 1.0;
     }
 }

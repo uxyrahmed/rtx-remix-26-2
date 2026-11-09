@@ -72,6 +72,12 @@ public class BlockTextureManager {
     private static final float DEFAULT_CUTOUT_SSS_TRANSMISSION_DISTANCE = THIN_SSS_MEASUREMENT_DISTANCE;
     private static final float DEFAULT_CUTOUT_SSS_ANISOTROPY = 0.0f;
     private static final float DEFAULT_CUTOUT_SSS_ALBEDO = 0.5f;
+    /**
+     * Share of a sprite's opaque texels that must scatter before a solid block takes the
+     * diffusion profile, which scatters the whole material. A sprite that scatters in only a
+     * few texels, such as the gems in an ore, stays a plain solid surface.
+     */
+    static final float SOLID_SSS_MIN_COVERAGE = 0.5f;
     public static final float DEFAULT_TERRAIN_EMISSION_MULTIPLIER = 1.0f;
     public static final float MAX_TERRAIN_EMISSION_MULTIPLIER = 50.0f;
     private static final float BASE_TERRAIN_EMISSION_INTENSITY = 100.0f;
@@ -168,7 +174,8 @@ public class BlockTextureManager {
         final int pixW, pixH, pixX, pixY;
         private final BitSet transparentPixels;
         RemixTexture albedo, normal, roughness, metallic, height, emissive, sss, sssAlbedo;
-        public boolean hasPBR, hasSSS;
+        public boolean hasPBR;
+        boolean hasSSS, scattersWhenSolid;
         float[] lightColor;
 
         SpriteEntry(int i, Identifier id, TextureAtlasSprite s) {
@@ -179,6 +186,17 @@ public class BlockTextureManager {
             pixW = contents.width(); pixH = contents.height();
             transparentPixels = scanTransparency(contents, pixW, pixH);
             hasTransparency = transparentPixels != null && !transparentPixels.isEmpty();
+        }
+
+        /**
+         * Whether quads drawn in {@code layerType} take that layer's subsurface material.
+         * Cutout layers read a thickness per texel, so any scattering texel qualifies. The
+         * solid layer's diffusion profile scatters the whole material, so a solid sprite
+         * qualifies only when it has an {@code _sss} or scatters across at least
+         * {@code SOLID_SSS_MIN_COVERAGE} of its opaque texels.
+         */
+        public boolean usesSssMaterial(int layerType) {
+            return layerType == L_SOLID ? scattersWhenSolid : hasSSS;
         }
 
         /**
@@ -434,6 +452,7 @@ public class BlockTextureManager {
         }
 
         boolean hasAnyNormal = false, hasAnyHeight = false, hasAnyEmissive = false, hasAnySSS = false;
+        int smallestHeightSprite = Integer.MAX_VALUE;
 
         for (SpriteEntry se : sprites) {
             NativeImage nI = labPBRVariants.loadVariant(se.id, "_n");
@@ -447,6 +466,7 @@ public class BlockTextureManager {
                     LabPBRConverter.applyAO(sssAlbedoAtlas, atlasW, nI, se.pixX, se.pixY, se.pixW, se.pixH);
                     hasAnyNormal = true;
                     hasAnyHeight = true;
+                    smallestHeightSprite = Math.min(smallestHeightSprite, Math.min(se.pixW, se.pixH));
                 }
                 if (sI != null) {
                     LabPBRConverter.blitRoughness(roughnessAtlas, atlasW, sI, se.pixX, se.pixY, se.pixW, se.pixH);
@@ -454,6 +474,8 @@ public class BlockTextureManager {
                     if (LabPBRConverter.hasSSSData(sI)) {
                         LabPBRConverter.blitSSS(sssThicknessAtlas, atlasW, sI, se.pixX, se.pixY, se.pixW, se.pixH);
                         se.hasSSS = true;
+                        se.scattersWhenSolid = LabPBRConverter.scatteringCoverage(sssThicknessAtlas, albedoRGBA,
+                                atlasW, se.pixX, se.pixY, se.pixW, se.pixH) >= SOLID_SSS_MIN_COVERAGE;
                         hasAnySSS = true;
                     }
                 }
@@ -461,6 +483,7 @@ public class BlockTextureManager {
                     LabPBRConverter.blitSingleScatteringAlbedo(
                             sssAlbedoAtlas, atlasW, sssI, se.pixX, se.pixY, se.pixW, se.pixH);
                     se.hasSSS = true;
+                    se.scattersWhenSolid = true;
                     hasAnySSS = true;
                 }
                 boolean needsEmissive = sI != null && LabPBRConverter.hasEmissiveData(sI);
@@ -485,7 +508,11 @@ public class BlockTextureManager {
 
         RemixTexture normalTex    = hasAnyNormal ? upload(api, "atlas_normal", normalAtlas, atlasW, atlasH,
                 TextureFormat.RGBA8_UNORM, TexturePurpose.NORMAL_DX) : null;
-        RemixTexture heightTex    = hasAnyHeight ? upload(api, "atlas_height", heightAtlas, atlasW, atlasH,
+        int heightRepeat = hasAnyHeight
+                ? LabPBRConverter.heightMapRepeat(Math.max(atlasW, atlasH), smallestHeightSprite) : 1;
+        RemixTexture heightTex    = hasAnyHeight ? upload(api, "atlas_height",
+                LabPBRConverter.repeatTexels(heightAtlas, atlasW, atlasH, heightRepeat),
+                atlasW * heightRepeat, atlasH * heightRepeat,
                 TextureFormat.R8_UNORM, TexturePurpose.HEIGHTMAP) : null;
         RemixTexture roughnessTex = upload(api, "atlas_roughness", roughnessAtlas, atlasW, atlasH,
                 TextureFormat.R8_UNORM, TexturePurpose.DATA);
@@ -518,9 +545,10 @@ public class BlockTextureManager {
                         sssTex, sssAlbedoTex) : null;
             }
         }
-        int sssCount = 0;
+        int sssCount = 0, solidSssCount = 0;
         StringBuilder sssSprites = new StringBuilder();
         for (SpriteEntry se : sprites) {
+            if (se.scattersWhenSolid) solidSssCount++;
             if (se.hasSSS) {
                 sssCount++;
                 int maxBlue = 0;
@@ -533,8 +561,8 @@ public class BlockTextureManager {
                     sssSprites.append("\n  ").append(se.id).append(" (maxSSS=").append(maxBlue).append(')');
             }
         }
-        LOGGER.info("Atlas materials created (normal={} height={} emissive={} sss={}, sssSprites={}{})",
-                hasAnyNormal, hasAnyHeight, hasAnyEmissive, hasAnySSS, sssCount, sssSprites);
+        LOGGER.info("Atlas materials created (normal={} height={} heightRepeat={} emissive={} sss={}, sssSprites={}, solidSssSprites={}{})",
+                hasAnyNormal, hasAnyHeight, heightRepeat, hasAnyEmissive, hasAnySSS, sssCount, solidSssCount, sssSprites);
     }
 
     private RemixMaterial createAtlasOpaqueMaterial(int lt, RemixTexture normalTex,

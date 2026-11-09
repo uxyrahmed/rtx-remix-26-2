@@ -197,7 +197,10 @@ atlas-level PBR, emissive, and luminance textures. Animated sprite uploads are
 batched and forwarded, which needs the upload hook, the patch types in the
 wrapper, and runtime support for updating a texture from memory. Glyph pages are
 mirrored on upload, because vanilla assembles them on the GPU and never keeps
-them on the CPU.
+them on the CPU. Atlas height maps are repeated until Remix's quadtree POM
+starts on cells no wider than the smallest sprite with height
+(`LabPBRConverter.heightMapRepeat`): the march wraps at sprite bounds, so a
+wider starting cell shears the relief.
 
 **Particles.** Slot preparation and CPU mesh snapshots run on a dedicated worker
 and are double buffered: the render thread publishes the previous frame's

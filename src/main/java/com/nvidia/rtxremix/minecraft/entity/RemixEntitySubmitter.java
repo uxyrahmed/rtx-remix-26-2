@@ -2368,6 +2368,7 @@ public class RemixEntitySubmitter {
             boolean hasSpecular = false;
             boolean hasEmissive = false;
             boolean hasSss = false;
+            int smallestHeightSprite = Integer.MAX_VALUE;
             ResourceManager rm = client.getResourceManager();
             Map<Identifier, TextureAtlasSprite> sprites = ((SpriteAtlasAccessor) atlas).getSprites();
             for (Map.Entry<Identifier, TextureAtlasSprite> entry : sprites.entrySet()) {
@@ -2387,6 +2388,7 @@ public class RemixEntitySubmitter {
                         LabPBRConverter.applyAO(pixels, w, nImg, x, y, spriteW, spriteH);
                         LabPBRConverter.applyAO(sssAlbedoData, w, nImg, x, y, spriteW, spriteH);
                         hasNormal = true;
+                        smallestHeightSprite = Math.min(smallestHeightSprite, Math.min(spriteW, spriteH));
                     }
                     if (sImg != null) {
                         LabPBRConverter.blitRoughness(roughData, w, sImg, x, y, spriteW, spriteH);
@@ -2425,7 +2427,10 @@ public class RemixEntitySubmitter {
             if (hasNormal) {
                 textures.normal = uploadAndOwn(textures, name + "_n", normalData, w, h,
                         TextureFormat.RGBA8_UNORM, TexturePurpose.NORMAL_DX);
-                textures.height = uploadAndOwn(textures, name + "_h", heightData, w, h,
+                int heightRepeat = LabPBRConverter.heightMapRepeat(Math.max(w, h), smallestHeightSprite);
+                textures.height = uploadAndOwn(textures, name + "_h",
+                        LabPBRConverter.repeatTexels(heightData, w, h, heightRepeat),
+                        w * heightRepeat, h * heightRepeat,
                         TextureFormat.R8_UNORM, TexturePurpose.HEIGHTMAP);
             }
             if (hasSpecular) {

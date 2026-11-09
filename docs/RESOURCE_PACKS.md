@@ -59,9 +59,9 @@ Sidecars sit beside the texture they describe and take its name plus a suffix:
 | `_n` | R, G | Normal X and Y. Z is reconstructed from them |
 | `_n` | B | Ambient occlusion, multiplied into the base colour |
 | `_n` | A | Height, used for parallax with a displacement of 0.25 blocks on terrain and 0.02 on particles |
-| `_s` | R | Perceptual smoothness, converted to roughness as `(1 - R/255)` squared |
+| `_s` | R | Perceptual smoothness. Remix takes perceptual roughness and squares it itself, so the mod passes `1 - R/255` and the surface gets LabPBR's linear roughness, `(1 - R/255)` squared |
 | `_s` | G | Reflectance. `230` and above is metal, below it is not. There is no coloured reflectance and no metal index |
-| `_s` | B | Subsurface scattering. `65` and above enables it and sets the thickness, rescaled so 65 is none and 255 is full. The porosity range below 65 is ignored |
+| `_s` | B | Subsurface scattering. `65` and above enables it and sets the thickness, rescaled so 65 is none and 255 is full. A solid block scatters as a whole, and only when at least half of its texture does; see [Subsurface Scattering](#subsurface-scattering). The porosity range below 65 is ignored |
 | `_s` | A | Emission. Below 255 the surface emits at `A/254` of its base colour. 255 means no emission |
 | `_sss` | R, G, B | The colour light takes on as it scatters through the surface. This suffix is the mod's own, not part of LabPBR |
 
@@ -75,6 +75,13 @@ A sidecar does not have to match the resolution of the texture it describes. It
 is sampled with a wrap, so a 16x16 sidecar tiles across a 32x32 base colour.
 That makes a plain 16x16 `_s` a workable way to say "this whole block is
 metal".
+
+Height maps of packs below 64x are enlarged before Remix sees them. Remix's
+parallax search starts on cells wider than such a pack's sprites, which shears
+recessed detail like bookshelf books, so the mod repeats every height texel
+until those cells fit the smallest sprite with height
+(`LabPBRConverter.heightMapRepeat`). A 16x pack's block atlas is repeated four
+times, about 32 MB of video memory; 64x and above are uploaded as they are.
 
 ## Animated Textures
 
@@ -99,7 +106,11 @@ A sidecar for an animated texture takes one of two shapes:
 Two paths, chosen by how the block is drawn (`BlockTextureManager`):
 
 - **Solid blocks** get a diffusion profile, with the scattering colour taken
-  from `_sss` when there is one and from the base colour otherwise.
+  from `_sss` when there is one and from the base colour otherwise. The profile
+  scatters the whole block, so a solid block takes it only when it has an
+  `_sss` or when `_s` blue scatters across at least half of its opaque texels
+  (`BlockTextureManager.SOLID_SSS_MIN_COVERAGE`). A few scattering texels, such
+  as the gems in an ore, leave the block an ordinary solid surface.
 - **Cutout blocks**, which is most foliage, get thickness-based scattering
   driven by `_s` blue, with `_sss` supplying the single-scattering colour.
 

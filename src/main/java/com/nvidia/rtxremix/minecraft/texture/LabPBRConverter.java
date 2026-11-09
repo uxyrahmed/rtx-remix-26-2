@@ -29,10 +29,12 @@ public final class LabPBRConverter {
 
     // --- Per-pixel conversions (int 0-255 domain) ---
 
-    private static int smoothnessToRoughness(int s) {
-        double lin = 1.0 - s / 255.0;
-        return clamp255((int) (lin * lin * 255.0));
-    }
+    /**
+     * LabPBR stores perceptual smoothness and Remix takes perceptual roughness, so the two
+     * are complements. Remix squares its input into GGX alpha itself, which is the spec's
+     * linear roughness {@code (1 - smoothness)^2}; squaring here as well would square twice.
+     */
+    private static int smoothnessToPerceptualRoughness(int s) { return 255 - s; }
 
     private static int f0ToMetallic(int g) { return g >= 230 ? 255 : 0; }
 
@@ -42,7 +44,8 @@ public final class LabPBRConverter {
 
     /**
      * Builds an RGBA8 normal atlas from _n images blitted into the given region.
-     * Reconstructs Z from X,Y per the LabPBR spec.
+     * Reconstructs Z from X,Y per the LabPBR spec and stores it in the same encoding as X and
+     * Y, because Remix reads a three-channel tangent-space normal as {@code rgb * 2 - 1}.
      */
     public static void blitNormal(byte[] dst, int atlasW, NativeImage n, int ox, int oy, int w, int h) {
         for (int y = 0; y < h; y++) {
@@ -56,7 +59,7 @@ public final class LabPBRConverter {
                 int idx = ((oy + y) * atlasW + (ox + x)) * 4;
                 dst[idx]     = (byte) nr;
                 dst[idx + 1] = (byte) ng;
-                dst[idx + 2] = (byte) clamp255((int) (nz * 255.0));
+                dst[idx + 2] = (byte) Math.round((nz + 1.0) * 127.5);
                 dst[idx + 3] = (byte) 255;
             }
         }
@@ -80,12 +83,58 @@ public final class LabPBRConverter {
         blitR8(dst, atlasW, n, ox, oy, w, h, 24); // alpha shift
     }
 
-    /** Blits roughness R8 from _s red channel (perceptual smoothness -> linear roughness). */
+    /** Longest side an atlas height map may grow to through {@link #heightMapRepeat}. */
+    static final int MAX_HEIGHT_MAP_SIDE = 16384;
+
+    /**
+     * Returns how many times to repeat each texel of an atlas height map, in each direction,
+     * before Remix's quadtree POM reads it. The quadtree starts its search halfway down the
+     * map's mip chain, on cells {@code 2^(floor(log2(side)) / 2)} texels wide, while the march
+     * wraps at the sprite's UV bounds, so a starting cell wider than a sprite takes in its
+     * neighbours and shears the relief. The 2048-texel block atlas of a 16x pack starts on
+     * 32-texel cells over 16-texel sprites; four repeats make both 64. Packs of 64x and
+     * above need none.
+     *
+     * @param atlasSide      the atlas's longer side, in texels
+     * @param smallestSprite the shorter side of the smallest sprite that has height, in texels
+     * @return the smallest power of two that fits, or 1 when none fits within
+     *         {@link #MAX_HEIGHT_MAP_SIDE}
+     */
+    public static int heightMapRepeat(int atlasSide, int smallestSprite) {
+        for (int repeat = 1; (long) atlasSide * repeat <= MAX_HEIGHT_MAP_SIDE; repeat *= 2) {
+            if (quadtreeStartCell(atlasSide * repeat) <= (long) smallestSprite * repeat) return repeat;
+        }
+        return 1;
+    }
+
+    private static int quadtreeStartCell(int side) {
+        int log2 = 31 - Integer.numberOfLeadingZeros(side);
+        return 1 << (log2 / 2);
+    }
+
+    /** Repeats every texel of an R8 map {@code repeat} times in each direction. */
+    public static byte[] repeatTexels(byte[] r8, int w, int h, int repeat) {
+        if (repeat == 1) return r8;
+        int outW = w * repeat;
+        byte[] out = new byte[outW * h * repeat];
+        for (int y = 0; y < h; y++) {
+            int firstRow = y * repeat * outW;
+            for (int x = 0; x < w; x++) {
+                Arrays.fill(out, firstRow + x * repeat, firstRow + (x + 1) * repeat, r8[y * w + x]);
+            }
+            for (int copy = 1; copy < repeat; copy++) {
+                System.arraycopy(out, firstRow, out, firstRow + copy * outW, outW);
+            }
+        }
+        return out;
+    }
+
+    /** Blits perceptual roughness R8 from the perceptual smoothness in _s red. */
     public static void blitRoughness(byte[] dst, int atlasW, NativeImage s, int ox, int oy, int w, int h) {
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++) {
                 int abgr = NativeImagePixels.abgr(s, x % s.getWidth(), y % s.getHeight());
-                dst[(oy + y) * atlasW + (ox + x)] = (byte) smoothnessToRoughness(abgr & 0xFF);
+                dst[(oy + y) * atlasW + (ox + x)] = (byte) smoothnessToPerceptualRoughness(abgr & 0xFF);
             }
     }
 
@@ -112,6 +161,24 @@ public final class LabPBRConverter {
                 dst[idx] = val; dst[idx + 1] = val; dst[idx + 2] = val;
                 dst[idx + 3] = (byte) 255;
             }
+    }
+
+    /**
+     * Returns the share of a region's opaque texels that scatter: texels whose albedo alpha is
+     * above zero and whose intensity in an atlas written by {@link #blitSSS} is above zero.
+     * A region with no opaque texels scatters nowhere.
+     */
+    public static float scatteringCoverage(byte[] sssRGBA, byte[] albedoRGBA, int atlasW,
+                                           int ox, int oy, int w, int h) {
+        int opaque = 0, scattering = 0;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                int idx = ((oy + y) * atlasW + (ox + x)) * 4;
+                if ((albedoRGBA[idx + 3] & 0xFF) == 0) continue;
+                opaque++;
+                if ((sssRGBA[idx] & 0xFF) > 0) scattering++;
+            }
+        return opaque == 0 ? 0.0f : (float) scattering / opaque;
     }
 
     /** Blits explicit SSS single-scattering albedo RGB from a {@code _sss} texture. */
@@ -413,7 +480,7 @@ public final class LabPBRConverter {
         byte[] table = new byte[w * h];
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++)
-                table[y * w + x] = (byte) smoothnessToRoughness(NativeImagePixels.abgr(s, x, y) & 0xFF);
+                table[y * w + x] = (byte) smoothnessToPerceptualRoughness(NativeImagePixels.abgr(s, x, y) & 0xFF);
         return table;
     }
 

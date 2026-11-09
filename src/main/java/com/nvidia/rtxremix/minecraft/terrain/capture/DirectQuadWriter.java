@@ -284,7 +284,7 @@ public final class DirectQuadWriter {
         String bk = isWater ? "water" : renderLayer;
         BlockTextureManager.SpriteEntry se = (spriteId != null && tex != null)
                 ? tex.getSpriteById(spriteId) : null;
-        if (se != null && se.hasSSS && tex != null && tex.getAtlasMaterialSSS(layerType) != null) {
+        if (se != null && se.usesSssMaterial(layerType) && tex != null && tex.getAtlasMaterialSSS(layerType) != null) {
             bk = sssBucketKeyForOriginalLayer(renderLayer, bk);
         }
         final String bucketKey = bk;
@@ -325,7 +325,7 @@ public final class DirectQuadWriter {
             if (cat == ChunkManager.CAT_SOLID && layerType != solidType) {
                 bk = "solid";
             }
-            if (se != null && se.hasSSS && tex != null && tex.getAtlasMaterialSSS(layerType) != null) {
+            if (se != null && se.usesSssMaterial(layerType) && tex != null && tex.getAtlasMaterialSSS(layerType) != null) {
                 bk = sssBucketKeyForOriginalLayer(layer, bk);
             }
             final String bucketKey = bk;
