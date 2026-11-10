@@ -506,7 +506,7 @@ public final class AtlasAnimationForwarder {
                     sssPatches.add(createPatch(p, sssDst, patchRowBytes, TextureFormat.RGBA8_UNORM));
                 }
 
-                // --- Emissive patch (authored _s alpha, else a built-in mask) ---
+                // --- Emissive patch (authored _s alpha, else a built-in mask, then the built-in tint) ---
                 if (emissiveHandle == 0) continue;
                 final boolean hasLabPBREmissive = pbr != null && pbr.hasPerPixelEmissive;
                 BuiltinEmission.Mask builtinMask = hasLabPBREmissive ? null : BuiltinEmission.mask(p.id);
@@ -532,6 +532,8 @@ public final class AtlasAnimationForwarder {
                         srcBuf, p.rowPitch,
                         p.width, p.height, builtinMask);
                 }
+                LabPBRConverter.applyEmissionTint(
+                    scratch, p.width, 0, 0, p.width, p.height, BuiltinEmission.tint(p.id));
 
                 ByteBuffer emissiveDst = DirectBufferPool.acquire(patchBytes);
                 emissiveDst.put(scratch, 0, patchBytes);

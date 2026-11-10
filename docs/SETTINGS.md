@@ -50,11 +50,12 @@ Exposure page still win the options they set.
 
 **Block Lights** opens a table of multipliers for normal light brightness,
 grouping related block lights into a row; the far left is Off. The Copper
-Beacon is separate: right-click a placed beacon for its own controls. Lanterns
-and sea pickles glow through their surfaces rather than casting separate
-lights, so **Block Glow Intensity** under Materials controls them. Emitting
-surfaces are not sampled directly, so a room lit only by them can be darker
-than one with separate lights.
+Beacon is separate: right-click a placed beacon for its own controls.
+Lanterns, fire and nether portals have rows of their own. Glowing blocks such
+as glowstone and froglights, lava, sea pickles, glow lichen, glow berries, end
+rods and magma glow through their surfaces only, so **Block Glow Intensity**
+under Materials controls them. Emitting surfaces are not sampled directly, so a
+room lit only by them can be darker than one with separate lights.
 
 The table commits changed rows together when you leave and rebuilds the loaded
 terrain once, rather than rebuilding every block light at each drag position.
@@ -72,7 +73,9 @@ below.
 ## Materials
 
 **Block Glow Intensity** changes the light emitted by glowing block surfaces,
-rather than the separate sources in Block Lights. Applying it recreates shared
+rather than the separate sources in Block Lights. The default keeps glowing
+textures readable instead of clipping them to white; 5.00x restores the
+brighter glow of earlier versions. Applying it recreates shared
 terrain materials and rebuilds the loaded terrain, so edits wait until you
 leave the page.
 

@@ -19,8 +19,10 @@ public final class BlockLightIntensityControls {
     private static final List<Control> CONTROLS = List.of(
             control("torch", "block.minecraft.torch"),
             control("soul_torch", "block.minecraft.soul_torch"),
+            control("copper_torch", "block.minecraft.copper_torch"),
             control("wall_torch", "block.minecraft.wall_torch"),
             control("soul_wall_torch", "block.minecraft.soul_wall_torch"),
+            control("copper_wall_torch", "block.minecraft.copper_wall_torch"),
             control("redstone_torch", "block.minecraft.redstone_torch"),
             control("redstone_wall_torch", "block.minecraft.redstone_wall_torch"),
             control("small_amethyst_bud", "block.minecraft.small_amethyst_bud"),
@@ -32,7 +34,13 @@ public final class BlockLightIntensityControls {
             control("conduit", "block.minecraft.conduit"),
             control("light", "block.minecraft.light"),
             control("candles", "rtxremix.setting.blockLights.candles"),
-            control("candle_cakes", "rtxremix.setting.blockLights.candleCakes"));
+            control("candle_cakes", "rtxremix.setting.blockLights.candleCakes"),
+            control("lantern", "block.minecraft.lantern"),
+            control("soul_lantern", "block.minecraft.soul_lantern"),
+            control("copper_lanterns", "rtxremix.setting.blockLights.copperLanterns"),
+            control("fire", "block.minecraft.fire"),
+            control("soul_fire", "block.minecraft.soul_fire"),
+            control("nether_portal", "block.minecraft.nether_portal"));
     private static final Map<Identifier, Control> BY_RULE_ID = indexByRuleId();
 
     private BlockLightIntensityControls() {}

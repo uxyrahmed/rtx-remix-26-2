@@ -475,6 +475,28 @@ public final class LabPBRConverter {
         return sAlphaTable;
     }
 
+    /**
+     * Filters the colour of every texel in a region of RGBA8 emission through {@code tint},
+     * once the emission is built: by {@link #blitEmissive} or {@link #blitEmissiveMask} into
+     * the atlas, or by {@link #buildEmissivePatch} or {@link #buildEmissiveMaskPatch} into an
+     * animation patch. No channel comes out brighter than it went in. Alpha, which says
+     * whether a texel emits, is left alone, and a texel that emits nothing stays black.
+     *
+     * @param rgba      the emissive atlas or patch
+     * @param rowPixels width of {@code rgba} in texels
+     */
+    public static void applyEmissionTint(byte[] rgba, int rowPixels, int ox, int oy, int w, int h,
+                                         BuiltinEmission.Tint tint) {
+        if (BuiltinEmission.Tint.NONE.equals(tint)) return;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                int i = ((oy + y) * rowPixels + (ox + x)) * 4;
+                rgba[i]     = (byte) Math.round((rgba[i]     & 0xFF) * tint.r());
+                rgba[i + 1] = (byte) Math.round((rgba[i + 1] & 0xFF) * tint.g());
+                rgba[i + 2] = (byte) Math.round((rgba[i + 2] & 0xFF) * tint.b());
+            }
+    }
+
     public static byte[] buildSRoughnessTable(NativeImage s) {
         int w = s.getWidth(), h = s.getHeight();
         byte[] table = new byte[w * h];

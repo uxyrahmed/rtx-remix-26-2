@@ -62,7 +62,7 @@ Sidecars sit beside the texture they describe and take its name plus a suffix:
 | `_s` | R | Perceptual smoothness. Remix takes perceptual roughness and squares it itself, so the mod passes `1 - R/255` and the surface gets LabPBR's linear roughness, `(1 - R/255)` squared |
 | `_s` | G | Reflectance. `230` and above is metal, below it is not. There is no coloured reflectance and no metal index |
 | `_s` | B | Subsurface scattering. `65` and above enables it and sets the thickness, rescaled so 65 is none and 255 is full. A solid block scatters as a whole, and only when at least half of its texture does; see [Subsurface Scattering](#subsurface-scattering). The porosity range below 65 is ignored |
-| `_s` | A | Emission. Below 255 the surface emits at `A/254` of its base colour. 255 means no emission |
+| `_s` | A | Emission. Below 255 the surface emits at `A/254` of its base colour, tinted for sea lanterns and froglights (see [Two Ways A Block Gives Off Light](#two-ways-a-block-gives-off-light)). 255 means no emission |
 | `_sss` | R, G, B | The colour light takes on as it scatters through the surface. This suffix is the mod's own, not part of LabPBR |
 
 The conversions are in `LabPBRConverter`, one named function per row.
@@ -122,18 +122,45 @@ the baseline pack covers. A thick solid block rarely needs it.
 They are separate systems and a block can use either or both.
 
 **An emissive surface** is a texture that glows, from `_s` alpha. Terrain
-surfaces emit at a base intensity of 100
+surfaces emit at a base intensity of 20
 (`BlockTextureManager.BASE_TERRAIN_EMISSION_INTENSITY`), which the player can
-scale with Materials, Block Glow Intensity. It lights the scene the way any
-bright surface does. Lanterns and sea pickles glow through their textures
-rather than analytic lights: hundreds of small lights across a map dilute the
-light sampling. The mod turns the pack's authored lantern emission up 2.5x and
-gives a waterlogged sea pickle a glowing sprout tip when the pack authors none;
-an `_s` with emission for the pickle replaces that (`BuiltinEmission`).
+scale with Materials, Block Glow Intensity. That is the brightest a surface
+glows, kept within what the tonemapper compresses without clipping, so a
+glowing block keeps its texture on an SDR display as well as HDR. Torches,
+campfires, fire and lanterns, whose block light below does the lighting, glow
+at 0.4 of their authored emission. Lava casts no block light, because a pool
+can hold thousands of blocks, so its surface lights its cave, and the mod
+doubles lava's authored emission up to full. Glowing cubes (glowstone, sea
+lanterns, shroomlights, froglights, jack o'lanterns, lit redstone lamps and
+copper bulbs) and glow lichen, glow berries, end rods, magma and sea pickles
+also light only through their surfaces. A waterlogged sea pickle gets a glowing
+sprout tip when the pack authors none; an `_s` with emission for the pickle
+replaces that (`BuiltinEmission`).
+
+Sea lanterns and froglights give off no light but their glow, and emission
+takes the base colour, which for them is pale, so they would light a room
+nearly white. The mod tints their emission with the block's curated light
+colour (see
+[Where A Block Light's Colour And Intensity Come From](#where-a-block-lights-colour-and-intensity-come-from)):
+sea lanterns glow cyan and froglights yellow, green and pink, the colours they
+light with when held. The tint applies to whatever emission the pack authors
+and works as a filter: the colour's strongest channel keeps its value and the
+others give up part of theirs, so no part of the block glows brighter than
+authored and nothing the tint colours can clip. The pack's `_s` alpha still
+decides where the block glows. The glow keeps between two thirds of its
+brightness, for the pink pearlescent froglight, and nearly nine tenths, for the
+green verdant one.
 
 **A block light** is an analytic light placed in the world by a rule, with a
-shape, a position, a colour, and an intensity. The player can scale each kind
-under Lighting, Block Lights (`BlockLightIntensityControls`).
+shape, a position, a colour, and an intensity. Built-in rules cover flames
+(torches of every kind, campfires, fire, candles), lanterns of every kind,
+nether portals, amethyst, conduits and light blocks. A light must not light its
+own block: a light wrapped around an opaque block lights the block's faces more
+than anything it reaches and clips the block to white. So a lantern's light
+leaves through four one-sided rect lights on its glass, a portal's through one
+on each side of the pane, and glowing cubes, which would need one on each of
+six faces, have none. The player can scale each kind under Lighting, Block
+Lights (`BlockLightIntensityControls`).
 
 The placed Copper Beacon instead has a dynamic light owned by its block
 entity, not a rule-system light. Its item still gets a held light
@@ -206,11 +233,19 @@ copy.
 
 Complete matters, because each built-in rule carries an authored intensity
 baseline that is multiplied into whatever the rule produces
-(`BlockLightDefaults`): 7.5x for torches and campfires and 5x for everything
-else. Replacing a rule takes that baseline away with it, so your authored
+(`BlockLightDefaults`): 7.5x for torches, campfires, fire, lanterns and nether
+portals, and 5x for everything else. Replacing a rule takes that baseline away
+with it, so your authored
 `intensity` is used as written and you should expect to state one. The
 player's own multiplier for that kind still applies on top, so a player can
 still dim or boost your light.
+
+A built-in rule also sets how strongly its light feeds volumetric fog: 1.5
+for torches and lanterns, 2 for campfires and fire, 1 for candles, 0.75 for
+redstone, conduits and nether portals, and 0.35 for amethyst. A replacement
+without
+`volumetricRadianceScale` takes the 0.5 default, so state the built-in value
+to keep the same glow in fog.
 
 You cannot delete a built-in light from a pack: a rule has to define a light.
 Only the player's Off position removes one.
@@ -231,7 +266,8 @@ Recolour the torch, keeping its shape and brightness, at
     "position": { "type": "offset", "x": 0.5, "y": 0.7, "z": 0.5 },
     "radius": 0.08,
     "intensity": 1575.0,
-    "color": [0.2, 0.6, 1.0]
+    "color": [0.2, 0.6, 1.0],
+    "volumetricRadianceScale": 1.5
   }
 }
 ```
@@ -240,6 +276,7 @@ That intensity is what the built-in rule works out to: light level 14, times 5
 radiance per level, times 3 because the emitter is shrunk to 0.08 and has to
 make up the surface area it gave away, times the 7.5x torch baseline. Write
 your own number if you want it brighter or dimmer, but start from that one.
+The volumetric scale is the built-in torch's too.
 
 Give a redstone lamp a light, but only while it is lit, at
 `assets/mypack/rtx_remix/block_lights/redstone_lamp.json`:
@@ -277,8 +314,10 @@ Colour, first match wins (`BlockTextureManager.getLightColorForBlock`):
 
 1. The rule's own `color`.
 2. A curated colour for that vanilla block, from
-   `BlockTextureManager.KNOWN_LIGHT_COLORS`.
-3. Any block whose id contains `candle`, which takes the warm colour.
+   `BlockTextureManager.KNOWN_LIGHT_COLORS`. These are saturated, the way
+   coloured-light shader packs read: lava and magma deep orange, froglights
+   yellow, green and pink, sea lanterns cyan, copper flames green.
+3. Any block whose id contains `candle`, which takes the torch's flame colour.
 4. The brightness-weighted average colour of the block's own sprite. Dark
    pixels count for almost nothing, so a torch takes the colour of its flame
    rather than of its stick.
