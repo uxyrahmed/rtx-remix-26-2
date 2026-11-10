@@ -492,16 +492,7 @@ public class BlockTextureManager {
                     se.scattersWhenSolid = true;
                     hasAnySSS = true;
                 }
-                boolean needsEmissive = sI != null && LabPBRConverter.hasEmissiveData(sI);
-                if (needsEmissive) {
-                    LabPBRConverter.blitEmissive(emissiveAtlas, atlasW, albedoRGBA, sI,
-                            se.pixX, se.pixY, se.pixW, se.pixH, 0f, BuiltinEmission.gain(se.id));
-                    hasAnyEmissive = true;
-                } else if (BuiltinEmission.mask(se.id) != null) {
-                    LabPBRConverter.blitEmissiveMask(emissiveAtlas, atlasW, albedoRGBA,
-                            se.pixX, se.pixY, se.pixW, se.pixH, BuiltinEmission.mask(se.id));
-                    hasAnyEmissive = true;
-                }
+                if (blitEmission(emissiveAtlas, se, sI)) hasAnyEmissive = true;
             } finally {
                 if (nI != null) nI.close();
                 if (sI != null) sI.close();
@@ -569,6 +560,28 @@ public class BlockTextureManager {
         }
         LOGGER.info("Atlas materials created (normal={} height={} heightRepeat={} emissive={} sss={}, sssSprites={}, solidSssSprites={}{})",
                 hasAnyNormal, hasAnyHeight, heightRepeat, hasAnyEmissive, hasAnySSS, sssCount, solidSssCount, sssSprites);
+    }
+
+    /**
+     * Writes a sprite's emission into the emissive atlas: its authored {@code _s} emission
+     * scaled by its built-in gain, else its built-in mask, either coloured by its built-in
+     * tint. {@link AtlasAnimationForwarder} builds every animated frame the same way.
+     *
+     * @return whether the sprite emits at all
+     */
+    private boolean blitEmission(byte[] emissiveAtlas, SpriteEntry se, NativeImage sI) {
+        if (sI != null && LabPBRConverter.hasEmissiveData(sI)) {
+            LabPBRConverter.blitEmissive(emissiveAtlas, atlasW, albedoRGBA, sI,
+                    se.pixX, se.pixY, se.pixW, se.pixH, 0f, BuiltinEmission.gain(se.id));
+        } else {
+            BuiltinEmission.Mask mask = BuiltinEmission.mask(se.id);
+            if (mask == null) return false;
+            LabPBRConverter.blitEmissiveMask(emissiveAtlas, atlasW, albedoRGBA,
+                    se.pixX, se.pixY, se.pixW, se.pixH, mask);
+        }
+        LabPBRConverter.applyEmissionTint(emissiveAtlas, atlasW,
+                se.pixX, se.pixY, se.pixW, se.pixH, BuiltinEmission.tint(se.id));
+        return true;
     }
 
     private RemixMaterial createAtlasOpaqueMaterial(int lt, RemixTexture normalTex,
@@ -1264,7 +1277,10 @@ public class BlockTextureManager {
     private static final float[] SCULK        = {0.15f, 0.75f, 0.90f};
     private static final float[] WHITE        = {1.00f, 1.00f, 1.00f};
 
-    /** Curated colors for vanilla light-emitting blocks. */
+    /**
+     * Curated colors for vanilla light-emitting blocks. Sea lanterns and froglights, which cast
+     * no analytic light, also glow in theirs ({@link BuiltinEmission#tint}).
+     */
     private static final Map<String, float[]> KNOWN_LIGHT_COLORS = Map.ofEntries(
             Map.entry("torch", FLAME), Map.entry("wall_torch", FLAME),
             Map.entry("lantern", FLAME), Map.entry("campfire", FLAME), Map.entry("fire", FLAME),
@@ -1348,6 +1364,11 @@ public class BlockTextureManager {
 
         float[] derived = spriteLightColors.get(id.getNamespace() + ":block/" + path);
         return derived != null ? derived : FALLBACK_WARM_WHITE;
+    }
+
+    /** Curated linear light colour of the vanilla block with id path {@code blockPath}, or null when it has none. */
+    static float[] curatedLightColor(String blockPath) {
+        return KNOWN_LIGHT_COLORS.get(blockPath);
     }
 
     // ====================================================================

@@ -62,7 +62,7 @@ Sidecars sit beside the texture they describe and take its name plus a suffix:
 | `_s` | R | Perceptual smoothness. Remix takes perceptual roughness and squares it itself, so the mod passes `1 - R/255` and the surface gets LabPBR's linear roughness, `(1 - R/255)` squared |
 | `_s` | G | Reflectance. `230` and above is metal, below it is not. There is no coloured reflectance and no metal index |
 | `_s` | B | Subsurface scattering. `65` and above enables it and sets the thickness, rescaled so 65 is none and 255 is full. A solid block scatters as a whole, and only when at least half of its texture does; see [Subsurface Scattering](#subsurface-scattering). The porosity range below 65 is ignored |
-| `_s` | A | Emission. Below 255 the surface emits at `A/254` of its base colour. 255 means no emission |
+| `_s` | A | Emission. Below 255 the surface emits at `A/254` of its base colour, tinted for sea lanterns and froglights (see [Two Ways A Block Gives Off Light](#two-ways-a-block-gives-off-light)). 255 means no emission |
 | `_sss` | R, G, B | The colour light takes on as it scatters through the surface. This suffix is the mod's own, not part of LabPBR |
 
 The conversions are in `LabPBRConverter`, one named function per row.
@@ -136,6 +136,20 @@ copper bulbs) and glow lichen, glow berries, end rods, magma and sea pickles
 also light only through their surfaces. A waterlogged sea pickle gets a glowing
 sprout tip when the pack authors none; an `_s` with emission for the pickle
 replaces that (`BuiltinEmission`).
+
+Sea lanterns and froglights give off no light but their glow, and emission
+takes the base colour, which for them is pale, so they would light a room
+nearly white. The mod tints their emission with the block's curated light
+colour (see
+[Where A Block Light's Colour And Intensity Come From](#where-a-block-lights-colour-and-intensity-come-from)):
+sea lanterns glow cyan and froglights yellow, green and pink, the colours they
+light with when held. The tint applies to whatever emission the pack authors
+and works as a filter: the colour's strongest channel keeps its value and the
+others give up part of theirs, so no part of the block glows brighter than
+authored and nothing the tint colours can clip. The pack's `_s` alpha still
+decides where the block glows. The glow keeps between two thirds of its
+brightness, for the pink pearlescent froglight, and nearly nine tenths, for the
+green verdant one.
 
 **A block light** is an analytic light placed in the world by a rule, with a
 shape, a position, a colour, and an intensity. Built-in rules cover flames

@@ -251,7 +251,9 @@ surfaces of flames and lanterns, whose rules light the scene, dimmer still
 lanterns and nether portals use one-sided rect lights on their faces rather
 than a sphere around the block. Glowing cubes, lava, glow lichen, end rods and
 sea pickles light only through their surfaces, to avoid diluting the sampler's
-candidate pool.
+candidate pool. Sea lanterns and froglights glow in their curated light colours
+through a `BuiltinEmission` tint, a per-channel filter that never brightens a
+channel, applied alike on the atlas build and on every animated frame.
 
 ## Invariants
 

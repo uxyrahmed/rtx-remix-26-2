@@ -5,6 +5,7 @@
 package com.nvidia.rtxremix.minecraft.texture;
 
 import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.resources.Identifier;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
@@ -93,6 +94,54 @@ class LabPBRConverterTest {
         byte[] untouched = {(byte) 255, (byte) 100};
         LabPBRConverter.applyEmissionGain(untouched, 1.0f);
         assertEquals(100, untouched[1] & 0xFF, "gain 1 is a no-op");
+    }
+
+    @Test
+    void applyEmissionTintFiltersTheRegionsColourAndLeavesAlphaAlone() {
+        // A 3x1 atlas tinted over its last two texels: colour is scaled and rounded, alpha is
+        // kept, a texel that emits nothing stays black, and the first texel is outside.
+        byte[] atlas = bytes(
+                100, 100, 100, 255,
+                100, 200, 50, 255,
+                0, 0, 0, 0);
+        LabPBRConverter.applyEmissionTint(atlas, 3, 1, 0, 2, 1, new BuiltinEmission.Tint(0.5f, 1f, 0.75f));
+        assertArrayEquals(bytes(
+                100, 100, 100, 255,
+                50, 200, 38, 255,
+                0, 0, 0, 0), atlas);
+
+        byte[] untinted = bytes(7, 8, 9, 255);
+        LabPBRConverter.applyEmissionTint(untinted, 1, 0, 0, 1, 1, BuiltinEmission.Tint.NONE);
+        assertArrayEquals(bytes(7, 8, 9, 255), untinted, "no tint is a no-op");
+    }
+
+    @Test
+    void aTintedSpriteEmitsTheSameFromTheAtlasBuildAndFromAnAnimationPatch() {
+        // A sea lantern's emission is built once into the atlas and again for every animation
+        // frame. Both must come out identical or the block changes colour once it animates.
+        Identifier seaLantern = Identifier.withDefaultNamespace("block/sea_lantern");
+        float gain = BuiltinEmission.gain(seaLantern);
+        BuiltinEmission.Tint tint = BuiltinEmission.tint(seaLantern);
+        byte[] albedo = bytes(
+                180, 200, 190, 255,   200, 220, 210, 255,
+                90, 120, 110, 255,    250, 250, 250, 255);
+        try (NativeImage specular = new NativeImage(2, 2, true)) {
+            specular.setPixelABGR(0, 0, 0xCC000000);
+            specular.setPixelABGR(1, 0, 0x14000000);
+            specular.setPixelABGR(0, 1, 0xFF000000);
+            specular.setPixelABGR(1, 1, 0xD7000000);
+
+            byte[] atlas = new byte[albedo.length];
+            LabPBRConverter.blitEmissive(atlas, 2, albedo, specular, 0, 0, 2, 2, 0f, gain);
+            LabPBRConverter.applyEmissionTint(atlas, 2, 0, 0, 2, 2, tint);
+
+            byte[] patch = new byte[albedo.length];
+            byte[] alphaTable = LabPBRConverter.applyEmissionGain(LabPBRConverter.buildSAlphaTable(specular), gain);
+            LabPBRConverter.buildEmissivePatch(patch, 8, ByteBuffer.wrap(albedo), 8, alphaTable, 2, 2, 2, 2, 0f);
+            LabPBRConverter.applyEmissionTint(patch, 2, 0, 0, 2, 2, tint);
+
+            assertArrayEquals(atlas, patch);
+        }
     }
 
     @Test
