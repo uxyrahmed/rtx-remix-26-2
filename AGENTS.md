@@ -146,8 +146,11 @@ counterpart, so a map overrides per option rather than replacing an archetype,
 and it needs the integrated server, so it is single-player only. Profiles
 resolve above `rtx.conf` and below user settings and quality presets. The
 player's Look setting drives one more mod family, the Vivid look's base and
-time profiles, just above the time profiles; the sky and sky lights read the
-same eased look strength for the parts a conf cannot express (`VividSky`).
+time profiles just above the time profiles, and its enclosed profile above
+weather, eased from the sky light at the camera. The sky and sky lights read
+the same eased look strength for the parts a conf cannot express
+(`VividSky`); its twinkling stars and auroras are stateless functions of
+synchronized world time, like the procedural clouds.
 
 **Procedural clouds.** Cloud identity and motion are stateless functions of cell
 coordinates and synchronized world time, so clients reconstruct the same clouds

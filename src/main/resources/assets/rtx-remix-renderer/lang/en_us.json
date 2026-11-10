@@ -83,7 +83,7 @@
   "rtxremix.setting.framerate.unfocused": "Background Max Framerate",
   "rtxremix.setting.framerate.unfocused.tip": "Framerate cap while the game window is not focused. Lower values leave the GPU to other applications. Unlimited leaves only Minecraft's Max Framerate in force.",
   "rtxremix.setting.sky.vividLook": "Look",
-  "rtxremix.setting.sky.vividLook.tip": "Natural keeps the physically based look. Vivid warms the sunlight into golden mornings and evenings, deepens the blue of the sky, turns nights moonlit blue, and adds light haze with light shafts, soft bloom, and a gentle vignette.",
+  "rtxremix.setting.sky.vividLook.tip": "Natural keeps the physically based look. Vivid warms the sunlight into golden mornings and evenings, deepens the blue of the sky, makes nights dark and moonlit blue with twinkling stars and auroras, and adds haze with light shafts, glowing light in caves, soft bloom, and a gentle vignette.",
   "rtxremix.setting.sky.enabled": "Sky Rendering",
   "rtxremix.setting.sky.enabled.tip": "Toggle the Remix sky.",
   "rtxremix.setting.sky.ambient": "Sky Ambient Light",

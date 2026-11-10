@@ -24,11 +24,21 @@ final class SkyStyle {
     float sunHalo = SHIPPED_SUN_HALO;
     /** Share of the hemisphere's mean radiance added back as multiple scattering. */
     float multipleScattering = SHIPPED_MULTIPLE_SCATTERING;
+    /** Peak radiance of the aurora curtains; 0 draws none. */
+    float auroraStrength;
+    /**
+     * Seconds of synchronized world time within the aurora's animation
+     * period, so every client draws the same curtains. Held at 0 while there
+     * is no aurora, so a sky whose sun stands still keeps skipping
+     * regeneration.
+     */
+    float auroraTime;
 
     /** Whether every input is finite and non-negative, which the shader needs. */
     boolean isValid() {
         return isFiniteNonNegative(ozone) && isFiniteNonNegative(saturation)
-                && isFiniteNonNegative(sunHalo) && isFiniteNonNegative(multipleScattering);
+                && isFiniteNonNegative(sunHalo) && isFiniteNonNegative(multipleScattering)
+                && isFiniteNonNegative(auroraStrength) && isFiniteNonNegative(auroraTime);
     }
 
     private static boolean isFiniteNonNegative(float value) {

@@ -78,30 +78,40 @@ moves, and a look lands on the next frame rather than creeping toward it.
 
 A look is a whole art direction the player chooses, rather than a situation
 the game reaches. The mod ships two: **Natural**, which is `rtx.conf` and the
-profiles in this guide as they are, and **Vivid**, warm golden light, a deeper
-blue sky, moonlit blue nights, light haze with light shafts, soft bloom, and a
-gentle vignette. Players switch under Options, RTX Remix Settings, Lighting,
+profiles in this guide as they are, and **Vivid**: warm golden light, a deeper
+blue sky, dark moonlit blue nights with twinkling stars and auroras, haze with
+light shafts, light sources glowing through the air in caves, soft bloom, and
+a gentle vignette. Players switch under Options, RTX Remix Settings, Lighting,
 **Look**, or with `/rtx look vivid` and `/rtx look natural`; the choice is
 saved with the mod's settings and fades with the same half-second half-life as
 a biome profile.
 
-Vivid is five profiles in `confs/looks/vivid/`. `base.conf` holds what Vivid
+Vivid is six profiles in `confs/looks/vivid/`. `base.conf` holds what Vivid
 sets at every time of day and in every dimension. `dawn.conf`, `day.conf`,
 `dusk.conf`, and `night.conf` follow the same Overworld schedule as the time
 profiles, so they obey the same rules: name an animated option in all four,
 and expect them to be held at zero outside the Overworld. They sit directly
 above the time profiles and below weather, so Vivid restyles the time of day
 while rain, thunder, biomes, zones, and water still win the options they name.
-With Natural selected all five are at strength zero. The five files are one
-family, like the time profiles: if any of them fails to load, all five are
+`enclosed.conf` takes over wherever the camera has no open sky above it, eased
+from the sky light where the camera stands: a cave, a ruin's interior, a
+roofed room. It sits above weather, since rain never falls there, and sets its
+own haze, bloom, and exposure, so a cave looks the same at noon and at
+midnight. Dimensions without sky light never count as enclosed.
+
+With Natural selected all six are at strength zero. The six files are one
+family, like the time profiles: if any of them fails to load, all six are
 dropped, the sky stays Natural too, and `/rtx conf status` reports them
-unacquired. The tonemapping options Vivid sets are among those the Image &
-Exposure page takes over once a player moves its controls.
+unacquired. The tonemapping and eye-adaptation options Vivid sets are among
+those the Image & Exposure page takes over once a player moves its controls.
 
 Part of Vivid is not a conf. The mod also warms the sunlight, gives the moon a
-bluer light, softens the sun's halo, and adds an ozone layer and extra
-saturation to the sky, fading them with the same strength. Retune the conf half by editing these five
-files and running `/rtx conf reload`, as with any profile.
+bluer light, softens the sun's halo, adds an ozone layer and extra saturation
+to the sky, makes the stars twinkle, and draws auroras over the northern sky
+after dusk, fading them all with the same strength. The twinkling and the
+aurora follow the world's synchronized game time, so every player in a world
+sees the same sky. Retune the conf half by editing these six files and running
+`/rtx conf reload`, as with any profile.
 
 ## Quick Start: A Zone, And Shipping It In Your Map
 
@@ -275,6 +285,7 @@ from several places with a shared channel.
 | `confs/zones/<name>.conf` | Distance falloff: 0 to 1 | 11000 | 0.01 | Half-second half-life |
 | Map `biomes/<biome>.conf` | Camera is in that biome: 0 or 1 | 6500 | 0.01 | Half-second half-life |
 | `confs/biomes/<biome>.conf` | Camera is in that biome: 0 or 1 | 6000 | 0.01 | Half-second half-life |
+| `confs/looks/vivid/enclosed.conf` | Look strength times how enclosed the camera is: 0 under open sky, 1 at sky light 4 or less | 5600 | 0.50 | Half-second half-life |
 | `confs/weather/thunder.conf` | Vanilla thunder gradient: 0 to 1 | 5500 | 0.01 | Immediate; vanilla ramps the gradient over about five seconds |
 | `confs/weather/rain.conf` | Vanilla rain gradient: 0 to 1 | 5000 | 0.01 | Immediate; vanilla ramps the gradient over about five seconds |
 | `confs/looks/vivid/night.conf` | Look strength times the night schedule | 4104 | 0.50 | The look's half-life, then the clock curve below |

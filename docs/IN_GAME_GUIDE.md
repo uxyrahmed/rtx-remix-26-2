@@ -38,7 +38,7 @@ repeat.
 | Command | What it does |
 |---|---|
 | `/rtx look` | Show the selected look, Natural or Vivid |
-| `/rtx look vivid` | Warm golden light, a deeper blue sky, moonlit blue nights, haze with light shafts, and soft bloom |
+| `/rtx look vivid` | Warm golden light, a deeper blue sky, dark moonlit nights with twinkling stars and auroras, haze with light shafts, and soft bloom |
 | `/rtx look natural` | The physically based look the mod ships with |
 | `/rtx preset` | List Remix's graphics tiers |
 | `/rtx preset <name>` | Set Remix's graphics tier for this session only; the Graphics Settings menu keeps its own saved choice |

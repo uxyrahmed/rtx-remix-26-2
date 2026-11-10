@@ -310,13 +310,14 @@ class ConfLayerDriverTest {
     // --- layer table invariants ---
 
     @Test
-    void staticTableHasFourteenUniqueRows() {
+    void staticTableHasFifteenUniqueRows() {
         // 1 water + 1 view-distance controller + 1 volumetric settling
         // controller + 2 weather + 4 time profiles + the Vivid look's base and
-        // 4 time profiles. Optional biome and zone rows are discovered from disk.
+        // 4 time profiles and its enclosed haze. Optional biome and zone rows are
+        // discovered from disk.
         assertEquals(66, ConfLayerDriver.vanillaBiomeNames().size(),
                 "vanilla 26.2 biome count (Biomes)");
-        assertEquals(14, ConfLayerDriver.STATIC_LAYER_TABLE.size());
+        assertEquals(15, ConfLayerDriver.STATIC_LAYER_TABLE.size());
         Set<String> names = new HashSet<>();
         Set<String> paths = new HashSet<>();
         for (var spec : ConfLayerDriver.STATIC_LAYER_TABLE) {
@@ -409,6 +410,8 @@ class ConfLayerDriverTest {
                 expected = 4103f;
             } else if (spec.name().equals(LogicChannels.LOOK_VIVID_NIGHT)) {
                 expected = 4104f;
+            } else if (spec.name().equals(LogicChannels.LOOK_VIVID_ENCLOSED)) {
+                expected = 5600f;
             } else {
                 fail("layer outside the documented priority bands: " + spec.name());
                 return;
@@ -522,26 +525,42 @@ class ConfLayerDriverTest {
     @Test
     void lookLayersScaleTheTimeScheduleByTheLookStrength() {
         ConfLayerDriver.TimeLayerStrengths duskFade = ConfLayerDriver.timeLayerStrengths(11500L);
-        ConfLayerDriver.LookLayerStrengths look = ConfLayerDriver.LookLayerStrengths.of(0.5f, duskFade);
+        ConfLayerDriver.LookLayerStrengths look =
+                ConfLayerDriver.LookLayerStrengths.of(0.5f, duskFade, 0.8f);
         assertEquals(0.5f, look.base(), 1e-6f, "the base layer takes the look strength itself");
         assertEquals(0.5f * duskFade.dawn(), look.dawn(), 1e-6f);
         assertEquals(0.5f * duskFade.day(), look.day(), 1e-6f);
         assertEquals(0.5f * duskFade.dusk(), look.dusk(), 1e-6f);
         assertEquals(0.5f * duskFade.night(), look.night(), 1e-6f);
+        assertEquals(0.4f, look.enclosed(), 1e-6f, "the enclosed layer takes look times enclosure");
 
         // At full strength the look's time layers resolve exactly as the time
         // family does, because they keep its order above their own base.
         for (long tick : new long[]{500L, 6000L, 11500L, 12500L, 18000L, 23500L}) {
             ConfLayerDriver.TimeLayerStrengths time = ConfLayerDriver.timeLayerStrengths(tick);
-            ConfLayerDriver.LookLayerStrengths full = ConfLayerDriver.LookLayerStrengths.of(1.0f, time);
+            ConfLayerDriver.LookLayerStrengths full = ConfLayerDriver.LookLayerStrengths.of(1.0f, time, 0.0f);
             assertTime(new ConfLayerDriver.TimeLayerStrengths(full.dawn(), full.day(), full.dusk(), full.night()),
                     time.dawn(), time.day(), time.dusk(), time.night());
         }
 
         ConfLayerDriver.LookLayerStrengths off = ConfLayerDriver.LookLayerStrengths.of(0.0f,
-                ConfLayerDriver.timeLayerStrengths(6000L));
-        assertEquals(new ConfLayerDriver.LookLayerStrengths(0.0f, 0.0f, 0.0f, 0.0f, 0.0f), off,
-                "the Natural look leaves every look layer at zero");
+                ConfLayerDriver.timeLayerStrengths(6000L), 1.0f);
+        assertEquals(new ConfLayerDriver.LookLayerStrengths(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f), off,
+                "the Natural look leaves every look layer at zero, even in a cave");
+    }
+
+    @Test
+    void enclosureFollowsTheSkyLightWhereTheCameraStands() {
+        assertEquals(0.0f, ConfLayerDriver.enclosure(15), "open sky");
+        assertEquals(0.0f, ConfLayerDriver.enclosure(ConfLayerDriver.OPEN_SKY_LIGHT));
+        assertEquals(1.0f, ConfLayerDriver.enclosure(ConfLayerDriver.ENCLOSED_SKY_LIGHT));
+        assertEquals(1.0f, ConfLayerDriver.enclosure(0), "a cave");
+        float previous = ConfLayerDriver.enclosure(0);
+        for (int skyLight = 1; skyLight <= 15; skyLight++) {
+            float current = ConfLayerDriver.enclosure(skyLight);
+            assertTrue(current <= previous, "more sky light never encloses more, at " + skyLight);
+            previous = current;
+        }
     }
 
     @Test
@@ -578,7 +597,8 @@ class ConfLayerDriverTest {
 
     private static final List<String> LOOK_LAYERS = List.of(LogicChannels.LOOK_VIVID,
             LogicChannels.LOOK_VIVID_DAWN, LogicChannels.LOOK_VIVID_DAY,
-            LogicChannels.LOOK_VIVID_DUSK, LogicChannels.LOOK_VIVID_NIGHT);
+            LogicChannels.LOOK_VIVID_DUSK, LogicChannels.LOOK_VIVID_NIGHT,
+            LogicChannels.LOOK_VIVID_ENCLOSED);
 
     /** A map's own profiles live inside its save, so they arrive on join and leave on disconnect. */
     @Test

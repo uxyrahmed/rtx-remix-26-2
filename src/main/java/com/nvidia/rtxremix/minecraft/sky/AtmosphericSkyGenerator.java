@@ -509,8 +509,8 @@ final class AtmosphericSkyGenerator {
         skyParameters.putFloat(72, style.saturation);
         skyParameters.putFloat(76, style.sunHalo);
         skyParameters.putFloat(80, style.multipleScattering);
-        skyParameters.putFloat(84, 0.0f);
-        skyParameters.putFloat(88, 0.0f);
+        skyParameters.putFloat(84, style.auroraStrength);
+        skyParameters.putFloat(88, style.auroraTime);
         skyParameters.putFloat(92, 0.0f);
 
         return !hasPublishedSkyParameters || skyParameters.mismatch(publishedSkyParameters) >= 0;

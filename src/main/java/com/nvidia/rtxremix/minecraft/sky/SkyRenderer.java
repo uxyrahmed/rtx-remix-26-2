@@ -43,6 +43,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Arrays;
 import java.util.List;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -163,10 +164,13 @@ public class SkyRenderer {
     private RemixTexture moonTextureAsset;
     private RemixMaterial sunMaterialAsset;
     private RemixMaterial moonMaterialAsset;
-    private RemixMaterial starMaterialAsset;
+    /** One material per twinkle group, so each group's brightness can change on its own. */
+    private final RemixMaterial[] starMaterialAssets = new RemixMaterial[VividSky.STAR_TWINKLE_GROUPS];
     private RemixMesh sunMeshAsset;
     private final RemixMesh[] moonMeshAssets = new RemixMesh[8];
-    private RemixMesh starMeshAsset;
+    /** The stars split into twinkle groups; a group vanilla gave no stars stays null. */
+    private final RemixMesh[] starMeshAssets = new RemixMesh[VividSky.STAR_TWINKLE_GROUPS];
+    private boolean starMeshesCreated;
     private long celestialBlendPNext;
     private final AtmosphericSkyGenerator atmosphericGenerator;
     private final TexturePatch atmosphericTexturePatch = new TexturePatch();
@@ -187,7 +191,7 @@ public class SkyRenderer {
     private float atmosphericMeanB;
     private float lastSunOpacity = -1.0f;
     private float lastMoonOpacity = -1.0f;
-    private float lastStarOpacity = -1.0f;
+    private final float[] lastStarOpacities = new float[VividSky.STAR_TWINKLE_GROUPS];
     private boolean overcastInitializationFailed;
 
     private static boolean enabled = true;
@@ -203,6 +207,7 @@ public class SkyRenderer {
         atmosphericTexturePatch.format = TextureFormat.RGBA16_SFLOAT;
         atmosphericTextureEntry.patches = new TexturePatch[]{atmosphericTexturePatch};
         atmosphericTextureUpdate.entries = new TextureBatchEntry[]{atmosphericTextureEntry};
+        Arrays.fill(lastStarOpacities, -1.0f);
         LOGGER.info("Sky renderer initialized (Rayleigh+Mie dome light)");
     }
 
@@ -219,7 +224,7 @@ public class SkyRenderer {
         lastWeatherIntensity = -1f;
         lastSunOpacity = -1.0f;
         lastMoonOpacity = -1.0f;
-        lastStarOpacity = -1.0f;
+        Arrays.fill(lastStarOpacities, -1.0f);
     }
 
     // ====================================================================
@@ -309,8 +314,12 @@ public class SkyRenderer {
                             * LightManager.THUNDER_SKY_INTENSITY);
         }
 
+        // Synchronized world time animates the aurora and the twinkling, so every
+        // client sees the same sky. The aurora follows whole ticks, as the sky
+        // already regenerates once a tick; twinkling follows the frame.
+        long gameTime = world.getGameTime();
         try (ProfileScope ignored = ProfileScope.begin("Sky.Atmosphere")) {
-            updateAtmosphericDomeLight(api, lightState, look);
+            updateAtmosphericDomeLight(api, lightState, look, gameTime);
         }
         try (ProfileScope ignored = ProfileScope.begin("Sky.Celestial")) {
             renderCelestialMeshes(
@@ -320,7 +329,9 @@ public class SkyRenderer {
                     starBrightness(skyAngle),
                     world.environmentAttributes().getDimensionValue(EnvironmentAttributes.MOON_PHASE),
                     sunDirection,
-                    weather.opacity());
+                    weather.opacity(),
+                    look,
+                    (gameTime + tickDelta) / 20.0);
         }
         boolean weatherRendered;
         try (ProfileScope ignored = ProfileScope.begin("Sky.Weather")) {
@@ -383,8 +394,9 @@ public class SkyRenderer {
     private void updateAtmosphericDomeLight(
             RemixAPI api,
             LightManager.SkyLightState lightState,
-            float look) {
-        regenerateSkyTexture(api, lightState, look);
+            float look,
+            long gameTime) {
+        regenerateSkyTexture(api, lightState, look, gameTime);
         publishSkyDome(api);
     }
 
@@ -491,11 +503,15 @@ public class SkyRenderer {
         }
     }
 
-    /** @param look the Vivid look strength, which restyles the atmosphere ({@link VividSky}) */
+    /**
+     * @param look     the Vivid look strength, which restyles the atmosphere ({@link VividSky})
+     * @param gameTime the world's synchronized game time in ticks, which animates the aurora
+     */
     private void regenerateSkyTexture(
             RemixAPI api,
             LightManager.SkyLightState lightState,
-            float look) {
+            float look,
+            long gameTime) {
         // Both assets must be live for a skip to be safe. They are released whenever the world
         // changes, and a world whose time never advances keeps the parameters constant forever,
         // so gating on the parameters alone would never rebuild them and the dome would stay black.
@@ -503,7 +519,7 @@ public class SkyRenderer {
                 && skyTextureAsset.isAlive()
                 && skyDomeLightAsset != null
                 && skyDomeLightAsset.isAlive();
-        VividSky.styleAtmosphere(skyStyle, look, lightState.sunPosition()[1]);
+        VividSky.styleAtmosphere(skyStyle, look, lightState.sunPosition()[1], gameTime);
         ByteBuffer pixelBuf = atmosphericGenerator.generate(
                 lightState,
                 atmosphericMean,
@@ -613,7 +629,9 @@ public class SkyRenderer {
             float starBrightness,
             MoonPhase moonPhase,
             float[] sunDirection,
-            float weatherOpacity) {
+            float weatherOpacity,
+            float look,
+            double worldSeconds) {
         if (!ensureCelestialAssets()) {
             return;
         }
@@ -621,10 +639,16 @@ public class SkyRenderer {
         float weatherVisibility = Math.max(
                 minimumCelestialWeatherVisibility, 1.0f - clamp01(weatherOpacity));
         float starsOpacity = starOpacity(starBrightness) * weatherVisibility;
-        if (starsOpacity > 0.0f && ensureStarMesh()) {
-            updateStarOpacity(starsOpacity);
+        if (starsOpacity > 0.0f && ensureStarMeshes()) {
             updateStarTransform(starTransform, cameraPos, skyAngle);
-            drawCelestialMesh(api, starMeshAsset, starTransform);
+            for (int group = 0; group < starMeshAssets.length; group++) {
+                if (starMeshAssets[group] == null) {
+                    continue;
+                }
+                updateStarOpacity(group,
+                        starsOpacity * VividSky.starTwinkle(look, group, worldSeconds));
+                drawCelestialMesh(api, starMeshAssets[group], starTransform);
+            }
         }
 
         celestialMoonDirection[0] = -sunDirection[0];
@@ -663,7 +687,9 @@ public class SkyRenderer {
             moonTextureAsset = loadMoonPhaseSheet();
             sunMaterialAsset = createCelestialMaterial(sunTextureAsset, SUN_RADIANCE);
             moonMaterialAsset = createCelestialMaterial(moonTextureAsset, MOON_RADIANCE);
-            starMaterialAsset = createStarMaterial();
+            for (int group = 0; group < starMaterialAssets.length; group++) {
+                starMaterialAssets[group] = createStarMaterial();
+            }
 
             sunMeshAsset = createCelestialMesh(sunMaterialAsset, 0.0f, 0.0f, 1.0f, 1.0f);
 
@@ -685,7 +711,7 @@ public class SkyRenderer {
             celestialBlendPNext = CELESTIAL_BLEND.allocNative(0);
             lastSunOpacity = 1.0f;
             lastMoonOpacity = 1.0f;
-            lastStarOpacity = 1.0f;
+            Arrays.fill(lastStarOpacities, 1.0f);
             return true;
         } catch (RuntimeException | IOException e) {
             LOGGER.error("Failed to create celestial SKY meshes", e);
@@ -696,12 +722,13 @@ public class SkyRenderer {
     }
 
     /**
-     * Creates the star mesh from vanilla's stars once they exist. Vanilla builds them
-     * with its sky renderer, which the level render creates for its first sky pass, so
-     * until then the sky shows the sun and moon without stars rather than nothing.
+     * Creates the star meshes from vanilla's stars once they exist, one per twinkle
+     * group. Vanilla builds the stars with its sky renderer, which the level render
+     * creates for its first sky pass, so until then the sky shows the sun and moon
+     * without stars rather than nothing.
      */
-    private boolean ensureStarMesh() {
-        if (starMeshAsset != null) {
+    private boolean ensureStarMeshes() {
+        if (starMeshesCreated) {
             return true;
         }
         float[] starVertices = VanillaStars.copyPositions();
@@ -709,7 +736,13 @@ public class SkyRenderer {
             return false;
         }
         try {
-            starMeshAsset = createStarMesh(starMaterialAsset, starVertices);
+            float[][] groups = splitStarQuads(starVertices, starMeshAssets.length);
+            for (int group = 0; group < groups.length; group++) {
+                if (groups[group].length > 0) {
+                    starMeshAssets[group] = createStarMesh(starMaterialAssets[group], groups[group]);
+                }
+            }
+            starMeshesCreated = true;
             return true;
         } catch (RuntimeException e) {
             LOGGER.error("Failed to create celestial SKY meshes", e);
@@ -845,12 +878,12 @@ public class SkyRenderer {
         }
     }
 
-    private void updateStarOpacity(float opacity) {
-        if (Math.abs(opacity - lastStarOpacity) <= CELESTIAL_OPACITY_UPDATE_DELTA) {
+    private void updateStarOpacity(int group, float opacity) {
+        if (Math.abs(opacity - lastStarOpacities[group]) <= CELESTIAL_OPACITY_UPDATE_DELTA) {
             return;
         }
-        RemixMaterialStore.get().update(starMaterialAsset, createStarMaterialInfo(opacity));
-        lastStarOpacity = opacity;
+        RemixMaterialStore.get().update(starMaterialAssets[group], createStarMaterialInfo(opacity));
+        lastStarOpacities[group] = opacity;
     }
 
     private static MaterialInfo createStarMaterialInfo(float opacity) {
@@ -885,6 +918,33 @@ public class SkyRenderer {
                 .setIndices(new int[]{0, 1, 2, 0, 2, 3});
         RemixMesh mesh = new RemixMesh(new RemixMeshSurface[]{surface});
         return RemixMeshStore.get().create(mesh);
+    }
+
+    /**
+     * Deals vanilla's star quads out to {@code groups} twinkle groups, quad by quad in
+     * turn. Vanilla scatters its stars over the sky in random order, so neighbouring
+     * stars land in different groups and twinkle independently.
+     *
+     * @param positions position-only quads, three floats per vertex and four vertices per quad
+     * @return each group's quads in the same layout, empty for a group that got none
+     * @throws IllegalStateException when the buffer is not whole quads
+     */
+    static float[][] splitStarQuads(float[] positions, int groups) {
+        int quadFloats = 4 * 3;
+        if (positions.length == 0 || positions.length % quadFloats != 0) {
+            throw new IllegalStateException("Minecraft star buffer must contain position-only quads");
+        }
+        int quads = positions.length / quadFloats;
+        float[][] split = new float[groups][];
+        for (int group = 0; group < groups; group++) {
+            int groupQuads = quads / groups + (group < quads % groups ? 1 : 0);
+            split[group] = new float[groupQuads * quadFloats];
+        }
+        for (int quad = 0; quad < quads; quad++) {
+            System.arraycopy(positions, quad * quadFloats,
+                    split[quad % groups], (quad / groups) * quadFloats, quadFloats);
+        }
+        return split;
     }
 
     private static RemixMesh createStarMesh(RemixMaterial material, float[] positions) {
@@ -1009,17 +1069,19 @@ public class SkyRenderer {
         destroyMeshes();
         destroyAsset(sunMaterialAsset);
         destroyAsset(moonMaterialAsset);
-        destroyAsset(starMaterialAsset);
+        for (int group = 0; group < starMaterialAssets.length; group++) {
+            destroyAsset(starMaterialAssets[group]);
+            starMaterialAssets[group] = null;
+        }
         destroyAsset(sunTextureAsset);
         destroyAsset(moonTextureAsset);
         sunMaterialAsset = null;
         moonMaterialAsset = null;
-        starMaterialAsset = null;
         sunTextureAsset = null;
         moonTextureAsset = null;
         lastSunOpacity = -1.0f;
         lastMoonOpacity = -1.0f;
-        lastStarOpacity = -1.0f;
+        Arrays.fill(lastStarOpacities, -1.0f);
     }
 
     private void destroyMeshes() {
@@ -1029,8 +1091,11 @@ public class SkyRenderer {
             destroyAsset(moonMeshAssets[i]);
             moonMeshAssets[i] = null;
         }
-        destroyAsset(starMeshAsset);
-        starMeshAsset = null;
+        for (int group = 0; group < starMeshAssets.length; group++) {
+            destroyAsset(starMeshAssets[group]);
+            starMeshAssets[group] = null;
+        }
+        starMeshesCreated = false;
     }
 
     private static void destroyAsset(RemixAssetBase asset) {

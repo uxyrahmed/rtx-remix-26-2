@@ -75,6 +75,22 @@ public final class VividSky {
      * darker than the shipped one rather than brighter.
      */
     static final float MOON_BRIGHTNESS = 1.15f;
+    /**
+     * Peak radiance of the aurora curtains at full strength, in the dome's
+     * units: a few times the moonlit sky around them, so they read clearly
+     * without lighting the world noticeably.
+     */
+    static final float AURORA_RADIANCE = 0.3f;
+    /**
+     * The aurora's animation period in ticks. The shader's frequencies are
+     * whole cycles of it, so wrapping world time to it is seamless and the
+     * time it receives stays small enough for float precision.
+     */
+    static final long AURORA_PERIOD_TICKS = 600L * 20L;
+    /** How far star brightness dips at full strength when a star twinkles. */
+    static final float TWINKLE_DEPTH = 0.65f;
+    /** Stars twinkle in this many independent groups, each with its own flicker. */
+    public static final int STAR_TWINKLE_GROUPS = 12;
 
     private VividSky() {
     }
@@ -86,12 +102,60 @@ public final class VividSky {
      * @param style     the inputs to overwrite
      * @param look      the look strength
      * @param sunHeight the vertical component of the direction to the sun
+     * @param gameTime  the world's synchronized game time in ticks, which
+     *                  animates the aurora identically on every client
      */
-    static void styleAtmosphere(SkyStyle style, float look, float sunHeight) {
+    static void styleAtmosphere(SkyStyle style, float look, float sunHeight, long gameTime) {
         style.ozone = OZONE * clamp01(look);
         style.saturation = lerp(1.0f, vividSaturation(sunHeight), look);
         style.sunHalo = lerp(SkyStyle.SHIPPED_SUN_HALO, SUN_HALO, look);
         style.multipleScattering = lerp(SkyStyle.SHIPPED_MULTIPLE_SCATTERING, MULTIPLE_SCATTERING, look);
+        style.auroraStrength = AURORA_RADIANCE * clamp01(look) * auroraVisibility(sunHeight);
+        style.auroraTime = style.auroraStrength > 0.0f
+                ? Math.floorMod(gameTime, AURORA_PERIOD_TICKS) / 20.0f
+                : 0.0f;
+    }
+
+    /**
+     * How much of the aurora shows for a sun height: none until the sun is
+     * well below the horizon after dusk, all of it through the night, and
+     * gone again before dawn brightens the sky.
+     */
+    static float auroraVisibility(float sunHeight) {
+        return 1.0f - smoothstep(-0.28f, -0.12f, sunHeight);
+    }
+
+    /**
+     * Brightness factor of one group of stars at a moment: 1 for the shipped
+     * look, and for Vivid a flicker that dips each group independently, as
+     * stars scintillate. A stateless function of synchronized world time, so
+     * every client sees the same stars twinkle.
+     *
+     * @param look    the look strength
+     * @param group   the star group, in {@code [0, STAR_TWINKLE_GROUPS)}
+     * @param seconds world time in seconds, game time plus the frame's partial tick
+     */
+    public static float starTwinkle(float look, int group, double seconds) {
+        float depth = TWINKLE_DEPTH * clamp01(look);
+        if (depth == 0.0f) {
+            return 1.0f;
+        }
+        double slow = 0.7 + 1.6 * groupHash(group, 1);
+        double fast = 2.1 + 2.4 * groupHash(group, 2);
+        double phase = 2.0 * Math.PI * groupHash(group, 3);
+        double wave = 0.6 * Math.sin(2.0 * Math.PI * slow * seconds + phase)
+                + 0.4 * Math.sin(2.0 * Math.PI * fast * seconds + 2.0 * phase);
+        float flicker = (float) (0.5 + 0.5 * wave);
+        return 1.0f - depth * flicker * flicker;
+    }
+
+    /** A fixed pseudo-random value in [0, 1) per star group and purpose. */
+    private static double groupHash(int group, int salt) {
+        long bits = (group * 0x9E3779B97F4A7C15L) ^ (salt * 0xC2B2AE3D27D4EB4FL);
+        bits ^= bits >>> 31;
+        bits *= 0xBF58476D1CE4E5B9L;
+        bits ^= bits >>> 29;
+        return (bits >>> 11) * 0x1.0p-53;
     }
 
     /**

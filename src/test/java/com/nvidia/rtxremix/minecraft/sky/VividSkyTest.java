@@ -20,17 +20,61 @@ class VividSkyTest {
         SkyStyle shipped = new SkyStyle();
         for (float sunHeight : new float[]{-1.0f, -0.1f, 0.0f, 0.2f, 1.0f}) {
             SkyStyle style = new SkyStyle();
-            VividSky.styleAtmosphere(style, 0.0f, sunHeight);
+            VividSky.styleAtmosphere(style, 0.0f, sunHeight, 123_456L);
             assertEquals(shipped.ozone, style.ozone);
             assertEquals(shipped.saturation, style.saturation);
             assertEquals(shipped.sunHalo, style.sunHalo);
             assertEquals(shipped.multipleScattering, style.multipleScattering);
+            assertEquals(0.0f, style.auroraStrength, "no aurora in the shipped sky");
+            assertEquals(0.0f, style.auroraTime, "an absent aurora never forces a regeneration");
         }
         assertArrayEquals(new float[]{0.85f * 0.06f, 0.9f * 0.06f, 0.06f},
                 VividSky.moonSource(0.06f, 0.0f));
         float[] transmittance = LOW_SUN.clone();
         VividSky.styleSunTransmittance(transmittance, 0.0f);
         assertArrayEquals(LOW_SUN, transmittance);
+        for (int group = 0; group < VividSky.STAR_TWINKLE_GROUPS; group++) {
+            assertEquals(1.0f, VividSky.starTwinkle(0.0f, group, 1234.5), "shipped stars hold steady");
+        }
+    }
+
+    @Test
+    void theAuroraShowsOnlyAtNightAndFollowsWorldTime() {
+        SkyStyle style = new SkyStyle();
+        VividSky.styleAtmosphere(style, 1.0f, 0.9f, 5_000L);
+        assertEquals(0.0f, style.auroraStrength, "no aurora by day");
+        assertEquals(0.0f, style.auroraTime);
+
+        long gameTime = 3L * VividSky.AURORA_PERIOD_TICKS + 1_234L;
+        VividSky.styleAtmosphere(style, 1.0f, -0.9f, gameTime);
+        assertEquals(VividSky.AURORA_RADIANCE, style.auroraStrength, 1e-6f, "full aurora at midnight");
+        assertEquals(1_234L / 20.0f, style.auroraTime, 1e-4f,
+                "the same world time gives every client the same curtains, wrapped to the period");
+        assertTrue(style.isValid());
+
+        assertEquals(0.0f, VividSky.auroraVisibility(0.0f), "none at sunset");
+        assertTrue(VividSky.auroraVisibility(-0.2f) > 0.0f
+                && VividSky.auroraVisibility(-0.2f) < 1.0f, "fading in after dusk");
+    }
+
+    @Test
+    void starsTwinkleIndependentlyWithinTheirDepth() {
+        float lowest = 1.0f;
+        float highest = 0.0f;
+        boolean groupsDiffer = false;
+        for (double seconds = 0.0; seconds < 20.0; seconds += 0.05) {
+            float first = VividSky.starTwinkle(1.0f, 0, seconds);
+            float second = VividSky.starTwinkle(1.0f, 1, seconds);
+            lowest = Math.min(lowest, first);
+            highest = Math.max(highest, first);
+            groupsDiffer |= Math.abs(first - second) > 0.05f;
+        }
+        assertTrue(lowest >= 1.0f - VividSky.TWINKLE_DEPTH - 1e-6f, "never darker than the twinkle depth");
+        assertTrue(highest <= 1.0f, "twinkling never brightens a star past its own brightness");
+        assertTrue(highest - lowest > 0.3f, "a star visibly flickers: " + lowest + ".." + highest);
+        assertTrue(groupsDiffer, "groups flicker out of step");
+        assertEquals(VividSky.starTwinkle(1.0f, 3, 77.25), VividSky.starTwinkle(1.0f, 3, 77.25),
+                "a stateless function of world time");
     }
 
     @Test
@@ -71,7 +115,7 @@ class VividSkyTest {
     @Test
     void halfALookIsHalfwayBetweenTheTwo() {
         SkyStyle style = new SkyStyle();
-        VividSky.styleAtmosphere(style, 0.5f, 1.0f);
+        VividSky.styleAtmosphere(style, 0.5f, 1.0f, 0L);
         assertEquals(VividSky.OZONE / 2.0f, style.ozone, 1e-6f);
         assertEquals((1.0f + VividSky.DAY_SATURATION) / 2.0f, style.saturation, 1e-6f);
         assertEquals((SkyStyle.SHIPPED_SUN_HALO + VividSky.SUN_HALO) / 2.0f, style.sunHalo, 1e-5f);

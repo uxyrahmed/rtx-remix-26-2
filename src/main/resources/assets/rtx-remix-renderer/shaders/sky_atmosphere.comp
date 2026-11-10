@@ -37,6 +37,10 @@ layout(std140, binding = 0) uniform SkyParameters {
 #define SunHaloBoost AtmosphereParameters.w
 // Share of the upper hemisphere's mean radiance added back as multiple scattering.
 #define MultipleScatteringScale StyleParameters.x
+// Peak aurora radiance (0 draws none) and synchronized world time in seconds,
+// wrapped to AURORA_PERIOD.
+#define AuroraStrength StyleParameters.y
+#define AuroraTime StyleParameters.z
 
 shared vec3 Reduction[64];
 shared vec3 ReducedUpperMean;
@@ -72,6 +76,12 @@ const float OZONE_CENTER_HEIGHT = 25000.0;
 const float OZONE_HALF_WIDTH = 15000.0;
 const int OZONE_LIGHT_STEPS = 128;
 const vec3 LUMINANCE_WEIGHTS = vec3(0.2126, 0.7152, 0.0722);
+// Every aurora frequency is a whole number of cycles per AURORA_PERIOD
+// seconds, so the wrapped time the CPU sends loops without a seam.
+const float AURORA_PERIOD = 600.0;
+const float AURORA_CYCLE = 2.0 * PI / AURORA_PERIOD;
+const vec3 AURORA_GREEN = vec3(0.10, 1.0, 0.45);
+const vec3 AURORA_VIOLET = vec3(0.80, 0.25, 1.0);
 const float MOON_MIE_HALO_BOOST = 1.0;
 const float GROUND_HORIZON_SCALE = 0.9;
 const float GROUND_NADIR_SCALE = 0.3;
@@ -105,6 +115,45 @@ vec3 ozoneTransmittance(float ozoneColumn) {
 vec3 applySkySaturation(vec3 radiance) {
     float luminance = dot(radiance, LUMINANCE_WEIGHTS);
     return max(radiance * SkySaturation + vec3(luminance * (1.0 - SkySaturation)), vec3(0.0));
+}
+
+// One aurora curtain hanging over the northern sky, in azimuth (0 due north)
+// and elevation, both in radians. Its foot waves along the horizon, its light
+// is brightest just above the foot and fades upwards from green to violet, and
+// folds run along its length.
+vec3 auroraCurtain(float azimuth, float elevation, float foot, float height, float t, float seed) {
+    float footElevation = foot
+        + 0.06 * sin(1.7 * azimuth + AURORA_CYCLE * 7.0 * t + seed)
+        + 0.025 * sin(4.1 * azimuth - AURORA_CYCLE * 13.0 * t + 2.0 * seed);
+    float rise = (elevation - footElevation) / height;
+    if (rise <= 0.0 || rise >= 1.0) {
+        return vec3(0.0);
+    }
+    float profile = smoothstep(0.0, 0.08, rise) * pow(1.0 - rise, 1.6);
+    float fold = 0.5 + 0.5 * sin(13.0 * azimuth + AURORA_CYCLE * 29.0 * t
+        + 2.0 * sin(5.0 * azimuth - AURORA_CYCLE * 19.0 * t + seed));
+    float folds = 0.35 + 0.65 * fold * fold;
+    vec3 color = mix(AURORA_GREEN, AURORA_VIOLET, smoothstep(0.35, 1.0, rise));
+    return color * (profile * folds);
+}
+
+// The aurora seen in one direction of the sky; zero when there is none.
+vec3 aurora(vec3 direction) {
+    if (AuroraStrength <= 0.0 || direction.y <= 0.0) {
+        return vec3(0.0);
+    }
+    float horizontal = length(direction.xz);
+    float northness = horizontal > 0.0 ? -direction.z / horizontal : 0.0;
+    float window = smoothstep(-0.35, 0.25, northness);
+    if (window <= 0.0) {
+        return vec3(0.0);
+    }
+    float azimuth = atan(direction.x, -direction.z);
+    float elevation = asin(clamp(direction.y, 0.0, 1.0));
+    float t = AuroraTime;
+    vec3 light = auroraCurtain(azimuth, elevation, 0.24, 0.42, t, 0.0)
+        + 0.55 * auroraCurtain(azimuth, elevation, 0.42, 0.32, t, 2.1);
+    return light * (AuroraStrength * window);
 }
 
 vec3 skyDirection(ivec2 pixel) {
@@ -340,7 +389,10 @@ void reduceAndComposeSky() {
         vec2 quantizedBa =
             unpackHalf2x16(packHalf2x16(vec2(radiance.b, 1.0)));
         finalSum += vec3(quantizedRg, quantizedBa.x);
-        imageStore(FinalSkyImage, pixel, vec4(radiance, 1.0));
+        // The aurora is drawn into the dome but left out of the mean, which
+        // feeds the ambient light, so it never tints the world through it.
+        imageStore(FinalSkyImage, pixel,
+            vec4(radiance + aurora(skyDirection(pixel)), 1.0));
     }
     memoryBarrierImage();
     Reduction[invocation] = finalSum;

@@ -32,6 +32,8 @@ public final class LogicChannels {
     public static final String LOOK_VIVID_DAY = LOOK_VIVID + ".day";
     public static final String LOOK_VIVID_DUSK = LOOK_VIVID + ".dusk";
     public static final String LOOK_VIVID_NIGHT = LOOK_VIVID + ".night";
+    /** The Vivid look's haze where the camera has no open sky above it. */
+    public static final String LOOK_VIVID_ENCLOSED = LOOK_VIVID + ".enclosed";
 
     private LogicChannels() {
     }

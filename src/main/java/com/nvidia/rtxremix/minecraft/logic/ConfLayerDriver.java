@@ -28,6 +28,7 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.phys.Vec3;
 
@@ -73,12 +74,15 @@ import net.minecraft.world.phys.Vec3;
  * The Vivid look is an alternative art direction the player selects: a base
  * layer and its own dawn, day, dusk, and night layers, sitting just above the
  * time profiles it restyles and below weather, so rain and thunder still own
- * their fog. One look strength eases toward the player's choice with the same
- * half-life as a biome; the base layer takes it directly and each look time
- * layer takes it times the matching time-of-day strength. At strength 0 every
- * option the look names falls through to the shipped look. The sky reads the
- * same strength through {@link #lookStrength()}, so the look's sun, moon, and
- * sky changes fade with its conf layers.
+ * their fog, plus an enclosed layer above weather for caves and roofed rooms,
+ * where no rain falls. One look strength eases toward the player's choice with
+ * the same half-life as a biome; the base layer takes it directly, each look
+ * time layer takes it times the matching time-of-day strength, and the
+ * enclosed layer takes it times the camera's enclosure, which eases the same
+ * way from the sky light where the camera stands. At strength 0 every option
+ * the look names falls through to the shipped look. The sky reads the same
+ * strength through {@link #lookStrength()}, so the look's sun, moon, and sky
+ * changes fade with its conf layers.
  *
  * Strengths persist runtime-side, so a layer costs a JNI call only when the
  * value to send actually changes.
@@ -86,7 +90,7 @@ import net.minecraft.world.phys.Vec3;
  * Acquire failures are normally tolerated per layer: a layer that fails to
  * acquire is skipped (visible in snapshot(), retried by reload()) while the
  * rest keep driving. The four time profiles fail together as one interpolation
- * family, and so do the five Vivid look profiles. Only water.conf gates the
+ * family, and so do the six Vivid look profiles. Only water.conf gates the
  * whole driver: it is the one profile every install must have, so its failure
  * deactivates the driver.
  *
@@ -158,14 +162,16 @@ public final class ConfLayerDriver {
 
     /**
      * The fixed layer catalog: water, automatic view distance, volumetric
-     * settling, weather, four fixed time-of-day profiles, and the five Vivid
-     * look profiles (14 rows, one per shipped conf; ConfLayerDriverTest
+     * settling, weather, four fixed time-of-day profiles, and the six Vivid
+     * look profiles (15 rows, one per shipped conf; ConfLayerDriverTest
      * cross-checks them against the shipped confs). Biome and zone layers are
      * NOT listed here: they are discovered from their conf file names at
      * acquire and reload time, so a new authored zone or biome needs no code.
      * Priorities: water dominates everything, zones beat biomes, thunder
      * beats rain, time supplies the environmental foundation with the Vivid
-     * look directly above it, and the two integration-owned controllers
+     * look directly above it, the Vivid enclosed haze sits above weather
+     * because rain does not reach where it applies, and the two
+     * integration-owned controllers
      * (automatic view distance, volumetric settling) sit below every
      * situational profile so authors can intentionally override their keys.
      * The time priorities, and the look's time priorities above its base,
@@ -214,6 +220,9 @@ public final class ConfLayerDriver {
                 false, LayerSource.MOD));
         table.add(new LayerSpec(LogicChannels.LOOK_VIVID_NIGHT, "confs/looks/vivid/night.conf", 4104f, 0.5f,
                 false, LayerSource.MOD));
+        // Above weather: no rain falls where the sky cannot reach.
+        table.add(new LayerSpec(LogicChannels.LOOK_VIVID_ENCLOSED, "confs/looks/vivid/enclosed.conf", 5600f,
+                0.5f, false, LayerSource.MOD));
         return List.copyOf(table);
     }
 
@@ -229,15 +238,32 @@ public final class ConfLayerDriver {
     }
 
     /**
-     * The strengths the Vivid look's five layers take: the eased look strength
-     * on the base layer, and that strength times each time-of-day strength on
-     * the look's time layers, so the look follows the same day schedule.
+     * The strengths the Vivid look's layers take: the eased look strength on
+     * the base layer, that strength times each time-of-day strength on the
+     * look's time layers, so the look follows the same day schedule, and that
+     * strength times the camera's enclosure on the enclosed layer.
      */
-    record LookLayerStrengths(float base, float dawn, float day, float dusk, float night) {
-        static LookLayerStrengths of(float look, TimeLayerStrengths time) {
+    record LookLayerStrengths(float base, float dawn, float day, float dusk, float night, float enclosed) {
+        static LookLayerStrengths of(float look, TimeLayerStrengths time, float enclosure) {
             return new LookLayerStrengths(look, look * time.dawn(), look * time.day(),
-                    look * time.dusk(), look * time.night());
+                    look * time.dusk(), look * time.night(), look * enclosure);
         }
+    }
+
+    /** Sky light at or below which the camera counts as fully enclosed. */
+    static final int ENCLOSED_SKY_LIGHT = 4;
+    /** Sky light at or above which the camera counts as under open sky. */
+    static final int OPEN_SKY_LIGHT = 12;
+
+    /**
+     * How enclosed the camera is, from the sky light where it stands: 0 under
+     * open sky, 1 in a cave or a roofed room, with a smooth band between so
+     * walking under a canopy or into a cave mouth fades rather than switches.
+     */
+    static float enclosure(int skyLight) {
+        float open = (float) (skyLight - ENCLOSED_SKY_LIGHT) / (OPEN_SKY_LIGHT - ENCLOSED_SKY_LIGHT);
+        open = Math.clamp(open, 0.0f, 1.0f);
+        return 1.0f - open * open * (3.0f - 2.0f * open);
     }
 
     /** Four runtime strengths for the fixed time-of-day profile stack. */
@@ -442,6 +468,8 @@ public final class ConfLayerDriver {
     private float lastThunderGradient;
     /** The Vivid look's eased strength: 0 is the shipped look, 1 is Vivid. */
     private float lookStrength;
+    /** The camera's eased enclosure ({@link #enclosure}), which drives the enclosed layer. */
+    private float enclosureStrength;
     /** Whether the look family holds live layers; set where acquires settle. */
     private boolean lookAcquired;
 
@@ -476,7 +504,7 @@ public final class ConfLayerDriver {
      * means no layers of that kind). Acquire failures are generally
      * per-layer tolerant: a non-gate layer that fails logs one WARN and stays
      * unacquired (update() skips it; reload() retries it), while the rest keep
-     * driving. The four time-of-day profiles and the five Vivid look profiles
+     * driving. The four time-of-day profiles and the six Vivid look profiles
      * are the additive exceptions: each forms a single interpolation family,
      * so a partial family is released and disabled together to avoid
      * discontinuities or lower-layer leakage.
@@ -499,7 +527,8 @@ public final class ConfLayerDriver {
             return false;
         }
         disableIncompleteFamily(LogicChannels.TIME_PREFIX, "Time-of-day", "dawn, day, dusk, and night");
-        disableIncompleteFamily(LogicChannels.LOOK_VIVID, "Vivid look", "its base, dawn, day, dusk, and night");
+        disableIncompleteFamily(LogicChannels.LOOK_VIVID, "Vivid look",
+                "its base, dawn, day, dusk, night, and enclosed profiles");
         lookAcquired = hasAcquiredLayer(LogicChannels.LOOK_VIVID);
         lastFrameNanos = 0;
         active = true;
@@ -785,7 +814,12 @@ public final class ConfLayerDriver {
         setTarget(LogicChannels.TIME_DAY, time.day());
         setTarget(LogicChannels.TIME_DUSK, time.dusk());
         setTarget(LogicChannels.TIME_NIGHT, time.night());
-        boolean lookMoving = targetLook(time, dtSeconds);
+        // A dimension without sky light (the Nether, the End) has no open sky
+        // to leave, so the enclosed haze stays off there.
+        float enclosureTarget = world.dimensionType().hasSkyLight()
+                ? enclosure(world.getBrightness(LightLayer.SKY, BlockPos.containing(cameraPos)))
+                : 0.0f;
+        boolean lookMoving = targetLook(time, enclosureTarget, dtSeconds);
         boolean weatherMoving = targetWeather(world, tickDelta);
 
         // Resolve the camera-position biome once (vanilla namespace only) and
@@ -825,22 +859,33 @@ public final class ConfLayerDriver {
     }
 
     /**
-     * Eases the look strength toward the player's choice, targets the look's
-     * layers from it, and reports whether it moved this frame. The first frame
-     * after an acquire has no elapsed time and takes the choice outright, so a
-     * saved Vivid look is in place on join rather than fading in.
+     * Eases the look strength toward the player's choice and the enclosure
+     * toward the camera's, targets the look's layers from them, and reports
+     * whether either moved this frame. The first frame after an acquire has no
+     * elapsed time and takes both targets outright, so a saved Vivid look is
+     * in place on join rather than fading in.
      */
-    private boolean targetLook(TimeLayerStrengths time, float dtSeconds) {
-        float previous = lookStrength;
-        float target = vividLook ? 1.0f : 0.0f;
-        lookStrength = dtSeconds > 0.0f ? smoothStep(lookStrength, target, dtSeconds) : target;
-        LookLayerStrengths look = LookLayerStrengths.of(lookStrength, time);
+    private boolean targetLook(TimeLayerStrengths time, float enclosureTarget, float dtSeconds) {
+        float previousLook = lookStrength;
+        float previousEnclosure = enclosureStrength;
+        float lookTarget = vividLook ? 1.0f : 0.0f;
+        if (dtSeconds > 0.0f) {
+            lookStrength = smoothStep(lookStrength, lookTarget, dtSeconds);
+            enclosureStrength = smoothStep(enclosureStrength, enclosureTarget, dtSeconds);
+        } else {
+            lookStrength = lookTarget;
+            enclosureStrength = enclosureTarget;
+        }
+        LookLayerStrengths look = LookLayerStrengths.of(lookStrength, time, enclosureStrength);
         setTarget(LogicChannels.LOOK_VIVID, look.base());
         setTarget(LogicChannels.LOOK_VIVID_DAWN, look.dawn());
         setTarget(LogicChannels.LOOK_VIVID_DAY, look.day());
         setTarget(LogicChannels.LOOK_VIVID_DUSK, look.dusk());
         setTarget(LogicChannels.LOOK_VIVID_NIGHT, look.night());
-        return moved(previous, lookStrength);
+        setTarget(LogicChannels.LOOK_VIVID_ENCLOSED, look.enclosed());
+        // The enclosure only moves anything on screen while the look is on.
+        return moved(previousLook, lookStrength)
+                || (lookStrength > 0.0f && moved(previousEnclosure, enclosureStrength));
     }
 
     /**
