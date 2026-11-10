@@ -55,9 +55,20 @@ class BuiltinEmissionTest {
     }
 
     @Test
-    void gainAppliesToLanternsOnly() {
-        assertEquals(2.5f, BuiltinEmission.gain(Identifier.withDefaultNamespace("block/lantern")));
-        assertEquals(2.5f, BuiltinEmission.gain(Identifier.withDefaultNamespace("block/soul_lantern")));
-        assertEquals(1.0f, BuiltinEmission.gain(Identifier.withDefaultNamespace("block/torch")));
+    void flamesAndLanternsGlowAtAShareOfTheirAuthoredEmission() {
+        for (String sprite : new String[]{"torch", "copper_torch", "campfire_fire", "fire_0", "lantern",
+                "oxidized_copper_lantern"}) {
+            assertEquals(BuiltinEmission.LIT_EMITTER_GAIN,
+                    BuiltinEmission.gain(Identifier.withDefaultNamespace("block/" + sprite)), sprite);
+        }
+    }
+
+    @Test
+    void lavaIsRaisedAndUnlistedSpritesKeepTheirAuthoredEmission() {
+        assertEquals(2.0f, BuiltinEmission.gain(Identifier.withDefaultNamespace("block/lava_still")));
+        assertEquals(2.0f, BuiltinEmission.gain(Identifier.withDefaultNamespace("block/lava_flow")));
+        for (String sprite : new String[]{"glowstone", "sea_lantern", "pearlescent_froglight_side", "nether_portal", "end_rod"}) {
+            assertEquals(1.0f, BuiltinEmission.gain(Identifier.withDefaultNamespace("block/" + sprite)), sprite);
+        }
     }
 }

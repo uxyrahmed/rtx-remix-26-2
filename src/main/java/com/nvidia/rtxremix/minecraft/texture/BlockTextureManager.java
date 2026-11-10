@@ -80,7 +80,13 @@ public class BlockTextureManager {
     static final float SOLID_SSS_MIN_COVERAGE = 0.5f;
     public static final float DEFAULT_TERRAIN_EMISSION_MULTIPLIER = 1.0f;
     public static final float MAX_TERRAIN_EMISSION_MULTIPLIER = 50.0f;
-    private static final float BASE_TERRAIN_EMISSION_INTENSITY = 100.0f;
+    /**
+     * The brightest a surface can glow: a fully emissive texel of a block with no light rule,
+     * such as lava, lights its cave yet stays within what the tonemapper compresses without
+     * clipping, so it keeps its texture on an SDR display. Blocks whose light rule lights the
+     * scene glow at a share of this ({@link BuiltinEmission#gain}).
+     */
+    private static final float BASE_TERRAIN_EMISSION_INTENSITY = 20.0f;
     public static final int L_SOLID = 0, L_CUTOUT = 1, L_CUTOUT_MIPPED = 2, L_TRANS = 3, L_GLASS = 4, LAYER_COUNT = 5;
 
     private static BlockTextureManager INSTANCE;

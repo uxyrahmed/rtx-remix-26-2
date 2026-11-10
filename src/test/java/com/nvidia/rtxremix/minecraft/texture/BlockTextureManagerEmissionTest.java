@@ -17,17 +17,17 @@ class BlockTextureManagerEmissionTest {
         BlockTextureManager manager = new BlockTextureManager(null);
 
         assertEquals(1.0f, manager.getTerrainEmissionMultiplier());
-        assertEquals(100.0f, manager.terrainEmissionIntensity());
+        assertEquals(20.0f, manager.terrainEmissionIntensity());
 
         manager.setTerrainEmissionMultiplier(0.25f);
         assertEquals(0.25f, manager.getTerrainEmissionMultiplier());
-        assertEquals(100.0f, manager.terrainEmissionIntensity());
+        assertEquals(20.0f, manager.terrainEmissionIntensity());
         assertTrue(manager.commitTerrainEmissionMultiplier());
-        assertEquals(25.0f, manager.terrainEmissionIntensity());
+        assertEquals(5.0f, manager.terrainEmissionIntensity());
         assertFalse(manager.commitTerrainEmissionMultiplier());
 
         manager.setTerrainEmissionMultiplier(0.0f);
-        assertEquals(25.0f, manager.terrainEmissionIntensity());
+        assertEquals(5.0f, manager.terrainEmissionIntensity());
         assertTrue(manager.commitTerrainEmissionMultiplier());
         assertEquals(0.0f, manager.terrainEmissionIntensity());
     }

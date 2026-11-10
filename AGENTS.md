@@ -244,9 +244,14 @@ and any explicit value, against Minecraft's render distance and pushes the
 radius into `TerrainState` only on change, so `TerrainState` is always finite.
 The flood rebuilds into a second set in per-frame slices and swaps it in when
 complete; a section added mid-build marks the set dirty rather than expanding a
-set about to be replaced. `LightManager` lights are never culled. Some small
-emitters use `BuiltinEmission` instead of built-in analytic-light rules to avoid
-diluting the sampler's candidate pool.
+set about to be replaced. `LightManager` lights are never culled. Emissive
+terrain stays dim enough to keep its texture through the tonemapper, and the
+surfaces of flames and lanterns, whose rules light the scene, dimmer still
+(`BuiltinEmission`). A rule's light must leave its own block unlit, so
+lanterns and nether portals use one-sided rect lights on their faces rather
+than a sphere around the block. Glowing cubes, lava, glow lichen, end rods and
+sea pickles light only through their surfaces, to avoid diluting the sampler's
+candidate pool.
 
 ## Invariants
 

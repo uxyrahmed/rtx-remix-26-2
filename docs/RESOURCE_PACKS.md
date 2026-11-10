@@ -122,18 +122,31 @@ the baseline pack covers. A thick solid block rarely needs it.
 They are separate systems and a block can use either or both.
 
 **An emissive surface** is a texture that glows, from `_s` alpha. Terrain
-surfaces emit at a base intensity of 100
+surfaces emit at a base intensity of 20
 (`BlockTextureManager.BASE_TERRAIN_EMISSION_INTENSITY`), which the player can
-scale with Materials, Block Glow Intensity. It lights the scene the way any
-bright surface does. Lanterns and sea pickles glow through their textures
-rather than analytic lights: hundreds of small lights across a map dilute the
-light sampling. The mod turns the pack's authored lantern emission up 2.5x and
-gives a waterlogged sea pickle a glowing sprout tip when the pack authors none;
-an `_s` with emission for the pickle replaces that (`BuiltinEmission`).
+scale with Materials, Block Glow Intensity. That is the brightest a surface
+glows, kept within what the tonemapper compresses without clipping, so a
+glowing block keeps its texture on an SDR display as well as HDR. Torches,
+campfires, fire and lanterns, whose block light below does the lighting, glow
+at 0.4 of their authored emission. Lava casts no block light, because a pool
+can hold thousands of blocks, so its surface lights its cave, and the mod
+doubles lava's authored emission up to full. Glowing cubes (glowstone, sea
+lanterns, shroomlights, froglights, jack o'lanterns, lit redstone lamps and
+copper bulbs) and glow lichen, glow berries, end rods, magma and sea pickles
+also light only through their surfaces. A waterlogged sea pickle gets a glowing
+sprout tip when the pack authors none; an `_s` with emission for the pickle
+replaces that (`BuiltinEmission`).
 
 **A block light** is an analytic light placed in the world by a rule, with a
-shape, a position, a colour, and an intensity. The player can scale each kind
-under Lighting, Block Lights (`BlockLightIntensityControls`).
+shape, a position, a colour, and an intensity. Built-in rules cover flames
+(torches of every kind, campfires, fire, candles), lanterns of every kind,
+nether portals, amethyst, conduits and light blocks. A light must not light its
+own block: a light wrapped around an opaque block lights the block's faces more
+than anything it reaches and clips the block to white. So a lantern's light
+leaves through four one-sided rect lights on its glass, a portal's through one
+on each side of the pane, and glowing cubes, which would need one on each of
+six faces, have none. The player can scale each kind under Lighting, Block
+Lights (`BlockLightIntensityControls`).
 
 The placed Copper Beacon instead has a dynamic light owned by its block
 entity, not a rule-system light. Its item still gets a held light
@@ -206,15 +219,17 @@ copy.
 
 Complete matters, because each built-in rule carries an authored intensity
 baseline that is multiplied into whatever the rule produces
-(`BlockLightDefaults`): 7.5x for torches and campfires and 5x for everything
-else. Replacing a rule takes that baseline away with it, so your authored
+(`BlockLightDefaults`): 7.5x for torches, campfires, fire, lanterns and nether
+portals, and 5x for everything else. Replacing a rule takes that baseline away
+with it, so your authored
 `intensity` is used as written and you should expect to state one. The
 player's own multiplier for that kind still applies on top, so a player can
 still dim or boost your light.
 
 A built-in rule also sets how strongly its light feeds volumetric fog: 1.5
-for torch and candle-sized open flames, 2 for campfires, 0.75 for redstone and
-conduit glows, and 0.35 for amethyst. A replacement without
+for torches and lanterns, 2 for campfires and fire, 1 for candles, 0.75 for
+redstone, conduits and nether portals, and 0.35 for amethyst. A replacement
+without
 `volumetricRadianceScale` takes the 0.5 default, so state the built-in value
 to keep the same glow in fog.
 

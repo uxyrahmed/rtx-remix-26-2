@@ -107,6 +107,7 @@
 
   "rtxremix.setting.blockLights.candles": "Candles",
   "rtxremix.setting.blockLights.candleCakes": "Candle Cakes",
+  "rtxremix.setting.blockLights.copperLanterns": "Copper Lanterns",
   "rtxremix.setting.blockLights.multiplier.tip": "Multiplies this block light's normal brightness. Off disables it; 1.00\u00d7 keeps the intended brightness. Changes apply when you leave this screen and rebuild loaded terrain once.",
 
   "rtxremix.setting.materials.terrainEmission": "Block Glow Intensity",

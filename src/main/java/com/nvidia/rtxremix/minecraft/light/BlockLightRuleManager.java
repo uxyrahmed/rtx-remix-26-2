@@ -346,6 +346,19 @@ public final class BlockLightRuleManager {
                 volumetricRadianceScale);
     }
 
+    static LightEntry rect(Identifier ruleId, int index, BlockState state, BlockPos pos,
+                           float x, float y, float z,
+                           Vec3 xAxis, float xSize, Vec3 yAxis, float ySize, Vec3 direction,
+                           LightEntry.ColorOverride color, Float intensity,
+                           float volumetricRadianceScale) {
+        return LightEntry.rect(key(pos, ruleId, index), state.getLightEmission(), state.getBlock(),
+                pos.getX() + x, pos.getY() + y, pos.getZ() + z,
+                xAxis.x, xAxis.y, xAxis.z, xSize,
+                yAxis.x, yAxis.y, yAxis.z, ySize,
+                direction.x, direction.y, direction.z,
+                color, intensity, volumetricRadianceScale);
+    }
+
     static LightEntry cylinder(Identifier ruleId, int index, BlockState state, BlockPos pos,
                                float x, float y, float z, float radius,
                                Vec3 axis, float axisLength,
