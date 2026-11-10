@@ -37,6 +37,9 @@ repeat.
 
 | Command | What it does |
 |---|---|
+| `/rtx look` | Show the selected look, Natural or Vivid |
+| `/rtx look vivid` | Warm golden light, a deeper blue sky, moonlit blue nights, haze with light shafts, and soft bloom |
+| `/rtx look natural` | The physically based look the mod ships with |
 | `/rtx preset` | List Remix's graphics tiers |
 | `/rtx preset <name>` | Set Remix's graphics tier for this session only; the Graphics Settings menu keeps its own saved choice |
 | `/rtx viewdistance` | Describe the band over which distant terrain fades out |
@@ -67,9 +70,9 @@ repeat.
 | `/rtx sss cutout reset` | Put the subsurface settings back to their defaults |
 
 Changing a water or subsurface value rebuilds the loaded terrain, so the world
-blinks for a moment. Of these commands, only `/rtx sky minimumopacity` writes
-your settings file. Change a value in the settings screen when you want it kept
-across launches.
+blinks for a moment. Of these commands, only `/rtx look` and
+`/rtx sky minimumopacity` write your settings file. Change a value in the
+settings screen when you want it kept across launches.
 
 ## Lighting Profiles And Zones
 

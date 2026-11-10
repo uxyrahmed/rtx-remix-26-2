@@ -76,6 +76,18 @@ class RtxOptionFactoryTest {
     }
 
     @Test
+    void vividLookToggleUsesLookNames() {
+        assertEquals(
+                "rtxremix.settings.value.vivid",
+                ((TranslatableContents) RtxOptionFactory.booleanValueText(
+                        RtxOptionFactory.VIVID_LOOK_ID, true).getContents()).getKey());
+        assertEquals(
+                "rtxremix.settings.value.natural",
+                ((TranslatableContents) RtxOptionFactory.booleanValueText(
+                        RtxOptionFactory.VIVID_LOOK_ID, false).getContents()).getKey());
+    }
+
+    @Test
     void bothDistanceSlidersShareOneSentinelAboveThirtyTwoChunks() {
         // Equal ranges are the point: one sentinel position serves both, where
         // the per-setting constants existed only because the maxima differed.

@@ -1120,6 +1120,7 @@ public class RtxRemixMod implements ClientModInitializer {
                     }))
                 .then(sssCommand())
                 .then(zoneCommand())
+                .then(lookCommand())
                 .then(ClientCommands.literal("conf")
                     .then(ClientCommands.literal("reload")
                         .executes(context -> {
@@ -1437,6 +1438,32 @@ public class RtxRemixMod implements ClientModInitializer {
             completion.accept(false);
         }
         return true;
+    }
+
+    /**
+     * /rtx look reports the selected look, and /rtx look natural|vivid selects
+     * one. The choice is the Look setting, so it is saved like a settings
+     * screen change.
+     */
+    private static LiteralArgumentBuilder<
+            FabricClientCommandSource> lookCommand() {
+        return ClientCommands.literal("look")
+            .executes(context -> {
+                context.getSource().sendFeedback(Component.literal(
+                        "Look: " + (ConfLayerDriver.isVividLook() ? "Vivid" : "Natural")));
+                return 1;
+            })
+            .then(ClientCommands.literal("natural")
+                .executes(context -> selectLook(context.getSource(), false)))
+            .then(ClientCommands.literal("vivid")
+                .executes(context -> selectLook(context.getSource(), true)));
+    }
+
+    private static int selectLook(FabricClientCommandSource source, boolean vivid) {
+        ConfLayerDriver.setVividLook(vivid);
+        saveRtxSettings();
+        source.sendFeedback(Component.literal("Look: " + (vivid ? "Vivid" : "Natural")));
+        return 1;
     }
 
     private LiteralArgumentBuilder<

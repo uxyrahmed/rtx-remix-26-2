@@ -57,7 +57,9 @@ import net.minecraft.world.phys.Vec3;
  * Manages sky rendering for RTX Remix.
  *
  * <p>Uses a physically-based dome light generated from Rayleigh+Mie atmospheric
- * scattering, driven by Minecraft's time-of-day. Weather blends a static HDR
+ * scattering, driven by Minecraft's time-of-day. The Vivid look restyles it,
+ * at the strength the conf-layer driver eases ({@link VividSky}). Weather
+ * blends a static HDR
  * overcast dome over the atmospheric sky. Dimensions without an overworld skybox
  * publish a constant dome instead: dark violet for the End, and black with no sky
  * ambient for a skyless ({@code Skybox.NONE}) dimension such as the Nether.
@@ -171,6 +173,7 @@ public class SkyRenderer {
     private final TextureBatchEntry atmosphericTextureEntry = new TextureBatchEntry();
     private final TexturePatchInfo atmosphericTextureUpdate = new TexturePatchInfo();
     private final float[] atmosphericMean = new float[3];
+    private final SkyStyle skyStyle = new SkyStyle();
     private final Transform sunTransform = new Transform();
     private final Transform moonTransform = new Transform();
     private final Transform starTransform = new Transform();
@@ -276,6 +279,7 @@ public class SkyRenderer {
         LightManager.SkyLightState lightState;
         float[] sunDirection;
         WeatherDomeState weather;
+        float look;
         try (ProfileScope ignored = ProfileScope.begin("Sky.Prepare")) {
             // The angle the sun light uses too, so the disc and the light stay aligned; it
             // steps once per tick, which lets the atmosphere skip the frames between.
@@ -287,6 +291,7 @@ public class SkyRenderer {
                             : new ConfLayerDriver.WeatherStrengths(
                                     world.getRainLevel(tickDelta),
                                     world.getThunderLevel(tickDelta));
+            look = confLayers != null ? confLayers.lookStrength() : 0.0f;
             LightManager lightManager = renderer.getLightManager();
             lightState = lightManager != null
                     ? lightManager.getSkyLightState()
@@ -305,7 +310,7 @@ public class SkyRenderer {
         }
 
         try (ProfileScope ignored = ProfileScope.begin("Sky.Atmosphere")) {
-            updateAtmosphericDomeLight(api, lightState);
+            updateAtmosphericDomeLight(api, lightState, look);
         }
         try (ProfileScope ignored = ProfileScope.begin("Sky.Celestial")) {
             renderCelestialMeshes(
@@ -377,8 +382,9 @@ public class SkyRenderer {
 
     private void updateAtmosphericDomeLight(
             RemixAPI api,
-            LightManager.SkyLightState lightState) {
-        regenerateSkyTexture(api, lightState);
+            LightManager.SkyLightState lightState,
+            float look) {
+        regenerateSkyTexture(api, lightState, look);
         publishSkyDome(api);
     }
 
@@ -485,9 +491,11 @@ public class SkyRenderer {
         }
     }
 
+    /** @param look the Vivid look strength, which restyles the atmosphere ({@link VividSky}) */
     private void regenerateSkyTexture(
             RemixAPI api,
-            LightManager.SkyLightState lightState) {
+            LightManager.SkyLightState lightState,
+            float look) {
         // Both assets must be live for a skip to be safe. They are released whenever the world
         // changes, and a world whose time never advances keeps the parameters constant forever,
         // so gating on the parameters alone would never rebuild them and the dome would stay black.
@@ -495,10 +503,12 @@ public class SkyRenderer {
                 && skyTextureAsset.isAlive()
                 && skyDomeLightAsset != null
                 && skyDomeLightAsset.isAlive();
+        VividSky.styleAtmosphere(skyStyle, look, lightState.sunPosition()[1]);
         ByteBuffer pixelBuf = atmosphericGenerator.generate(
                 lightState,
                 atmosphericMean,
                 mieScatteringAnisotropy,
+                skyStyle,
                 publishedOutputValid);
         if (pixelBuf == null) {
             return;

@@ -22,6 +22,7 @@ final class RtxOptionFactory {
     static final String LIGHT_DISTANCE_ID = "dist.light";
     static final String SUN_INTENSITY_ID = "sky.sunIntensity";
     static final String PROCEDURAL_CLOUDS_ID = "clouds.procedural";
+    static final String VIVID_LOOK_ID = "sky.vividLook";
     static final String TERRAIN_EMISSION_MULTIPLIER_ID =
             "materials.terrainEmissionMultiplier";
     static final double SUN_MIN_NONZERO_INTENSITY = 0.01;
@@ -268,6 +269,11 @@ final class RtxOptionFactory {
             return Component.translatable(value
                     ? "rtxremix.settings.value.procedural"
                     : "rtxremix.settings.value.classic");
+        }
+        if (VIVID_LOOK_ID.equals(settingId)) {
+            return Component.translatable(value
+                    ? "rtxremix.settings.value.vivid"
+                    : "rtxremix.settings.value.natural");
         }
         return CommonComponents.optionStatus(value);
     }

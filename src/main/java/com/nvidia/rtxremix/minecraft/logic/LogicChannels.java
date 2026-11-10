@@ -9,8 +9,8 @@ package com.nvidia.rtxremix.minecraft.logic;
  * weights by ZONE_PREFIX + name (ZoneDefinition / ZoneRegistry) and
  * ConfLayerDriver maps those names onto the zone confs; the remaining
  * constants are the driver's internal layer/trigger names for water,
- * automatic view distance, volumetric settling, biomes, weather, and fixed
- * time-of-day confs.
+ * automatic view distance, volumetric settling, biomes, weather, fixed
+ * time-of-day confs, and the Vivid look.
  */
 public final class LogicChannels {
     public static final String UNDERWATER = "mc.underwater";
@@ -25,6 +25,13 @@ public final class LogicChannels {
     public static final String TIME_DAY = TIME_PREFIX + "day";
     public static final String TIME_DUSK = TIME_PREFIX + "dusk";
     public static final String TIME_NIGHT = TIME_PREFIX + "night";
+    public static final String LOOK_PREFIX = "mc.look.";
+    /** The Vivid look: a base layer plus its own dawn, day, dusk, and night layers. */
+    public static final String LOOK_VIVID = LOOK_PREFIX + "vivid";
+    public static final String LOOK_VIVID_DAWN = LOOK_VIVID + ".dawn";
+    public static final String LOOK_VIVID_DAY = LOOK_VIVID + ".day";
+    public static final String LOOK_VIVID_DUSK = LOOK_VIVID + ".dusk";
+    public static final String LOOK_VIVID_NIGHT = LOOK_VIVID + ".night";
 
     private LogicChannels() {
     }

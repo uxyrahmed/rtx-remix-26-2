@@ -46,8 +46,9 @@ import net.minecraft.world.phys.Vec3;
  * inherits the rest from the archetype. Single-player only: a remote server
  * gives this client no save directory.
  *
- * Water, automatic view distance, volumetric settling, weather, and four fixed
- * time-of-day layers come from a static table and are mod-owned. Optional
+ * Water, automatic view distance, volumetric settling, weather, four fixed
+ * time-of-day layers, and the Vivid look come from a static table and are
+ * mod-owned. Optional
  * biome and zone layers are discovered from confs/biomes/*.conf and
  * confs/zones/*.conf file names in either root, at acquire, join, and reload
  * time. The runtime resolves the layer stack per frame; temporal easing
@@ -68,14 +69,26 @@ import net.minecraft.world.phys.Vec3;
  * unsmoothed because it is already an envelope: full while a weather, biome,
  * or zone transition is in progress and for a short hold afterwards, zero
  * once the scene is still.
+ *
+ * The Vivid look is an alternative art direction the player selects: a base
+ * layer and its own dawn, day, dusk, and night layers, sitting just above the
+ * time profiles it restyles and below weather, so rain and thunder still own
+ * their fog. One look strength eases toward the player's choice with the same
+ * half-life as a biome; the base layer takes it directly and each look time
+ * layer takes it times the matching time-of-day strength. At strength 0 every
+ * option the look names falls through to the shipped look. The sky reads the
+ * same strength through {@link #lookStrength()}, so the look's sun, moon, and
+ * sky changes fade with its conf layers.
+ *
  * Strengths persist runtime-side, so a layer costs a JNI call only when the
  * value to send actually changes.
  *
  * Acquire failures are normally tolerated per layer: a layer that fails to
  * acquire is skipped (visible in snapshot(), retried by reload()) while the
  * rest keep driving. The four time profiles fail together as one interpolation
- * family. Only water.conf gates the whole driver: it is the one profile every
- * install must have, so its failure deactivates the driver.
+ * family, and so do the five Vivid look profiles. Only water.conf gates the
+ * whole driver: it is the one profile every install must have, so its failure
+ * deactivates the driver.
  *
  * Render thread only (per-frame update from RemixRenderer's camera update;
  * client commands run on the same thread).
@@ -145,18 +158,19 @@ public final class ConfLayerDriver {
 
     /**
      * The fixed layer catalog: water, automatic view distance, volumetric
-     * settling, weather, and four fixed time-of-day profiles (9 rows, one per
-     * shipped conf; ConfLayerDriverTest cross-checks them against the shipped
-     * confs). Biome and zone layers are NOT listed here: they are discovered
-     * from their conf file names at acquire and reload time, so a new authored
-     * look needs no code.
+     * settling, weather, four fixed time-of-day profiles, and the five Vivid
+     * look profiles (14 rows, one per shipped conf; ConfLayerDriverTest
+     * cross-checks them against the shipped confs). Biome and zone layers are
+     * NOT listed here: they are discovered from their conf file names at
+     * acquire and reload time, so a new authored zone or biome needs no code.
      * Priorities: water dominates everything, zones beat biomes, thunder
-     * beats rain, time supplies the environmental foundation, and the two
-     * integration-owned controllers (automatic view distance, volumetric
-     * settling) sit below every situational profile so authors can
-     * intentionally override their keys. The four time priorities must stay
-     * ordered dawn/day/dusk/night so the hardcoded strengths compensate for the
-     * runtime's nested LERP.
+     * beats rain, time supplies the environmental foundation with the Vivid
+     * look directly above it, and the two integration-owned controllers
+     * (automatic view distance, volumetric settling) sit below every
+     * situational profile so authors can intentionally override their keys.
+     * The time priorities, and the look's time priorities above its base,
+     * must stay ordered dawn/day/dusk/night so the hardcoded strengths
+     * compensate for the runtime's nested LERP.
      * Avoid 10000 (the runtime's default dynamic-layer priority).
      */
     static final List<LayerSpec> STATIC_LAYER_TABLE = buildStaticLayerTable();
@@ -190,7 +204,40 @@ public final class ConfLayerDriver {
                 LayerSource.MOD));
         table.add(new LayerSpec(LogicChannels.TIME_NIGHT, "confs/time/night.conf", 4003f, 0.5f, false,
                 LayerSource.MOD));
+        table.add(new LayerSpec(LogicChannels.LOOK_VIVID, "confs/looks/vivid/base.conf", 4100f, 0.5f, false,
+                LayerSource.MOD));
+        table.add(new LayerSpec(LogicChannels.LOOK_VIVID_DAWN, "confs/looks/vivid/dawn.conf", 4101f, 0.5f,
+                false, LayerSource.MOD));
+        table.add(new LayerSpec(LogicChannels.LOOK_VIVID_DAY, "confs/looks/vivid/day.conf", 4102f, 0.5f,
+                false, LayerSource.MOD));
+        table.add(new LayerSpec(LogicChannels.LOOK_VIVID_DUSK, "confs/looks/vivid/dusk.conf", 4103f, 0.5f,
+                false, LayerSource.MOD));
+        table.add(new LayerSpec(LogicChannels.LOOK_VIVID_NIGHT, "confs/looks/vivid/night.conf", 4104f, 0.5f,
+                false, LayerSource.MOD));
         return List.copyOf(table);
+    }
+
+    /** Whether the player chose the Vivid look; the settings screen and {@code /rtx look} write it. */
+    private static boolean vividLook;
+
+    public static boolean isVividLook() {
+        return vividLook;
+    }
+
+    public static void setVividLook(boolean vivid) {
+        vividLook = vivid;
+    }
+
+    /**
+     * The strengths the Vivid look's five layers take: the eased look strength
+     * on the base layer, and that strength times each time-of-day strength on
+     * the look's time layers, so the look follows the same day schedule.
+     */
+    record LookLayerStrengths(float base, float dawn, float day, float dusk, float night) {
+        static LookLayerStrengths of(float look, TimeLayerStrengths time) {
+            return new LookLayerStrengths(look, look * time.dawn(), look * time.day(),
+                    look * time.dusk(), look * time.night());
+        }
     }
 
     /** Four runtime strengths for the fixed time-of-day profile stack. */
@@ -393,6 +440,10 @@ public final class ConfLayerDriver {
     private final SettlingEnvelope settling = new SettlingEnvelope();
     private float lastRainGradient;
     private float lastThunderGradient;
+    /** The Vivid look's eased strength: 0 is the shipped look, 1 is Vivid. */
+    private float lookStrength;
+    /** Whether the look family holds live layers; set where acquires settle. */
+    private boolean lookAcquired;
 
     public ConfLayerDriver() {
         for (LayerSpec spec : STATIC_LAYER_TABLE) {
@@ -425,9 +476,10 @@ public final class ConfLayerDriver {
      * means no layers of that kind). Acquire failures are generally
      * per-layer tolerant: a non-gate layer that fails logs one WARN and stays
      * unacquired (update() skips it; reload() retries it), while the rest keep
-     * driving. The four time-of-day profiles are the one additive exception:
-     * they form a single interpolation family, so a partial family is released
-     * and disabled together to avoid discontinuities or lower-layer leakage.
+     * driving. The four time-of-day profiles and the five Vivid look profiles
+     * are the additive exceptions: each forms a single interpolation family,
+     * so a partial family is released and disabled together to avoid
+     * discontinuities or lower-layer leakage.
      * Only a water.conf failure disables the whole driver - it is the one
      * profile every install must have - releasing whatever was acquired. Call
      * with no live handles (initial init, or after releaseAll()).
@@ -446,7 +498,9 @@ public final class ConfLayerDriver {
         if (!acquireMissing(true)) {
             return false;
         }
-        disableIncompleteTimeFamily();
+        disableIncompleteFamily(LogicChannels.TIME_PREFIX, "Time-of-day", "dawn, day, dusk, and night");
+        disableIncompleteFamily(LogicChannels.LOOK_VIVID, "Vivid look", "its base, dawn, day, dusk, and night");
+        lookAcquired = hasAcquiredLayer(LogicChannels.LOOK_VIVID);
         lastFrameNanos = 0;
         active = true;
         return true;
@@ -557,14 +611,20 @@ public final class ConfLayerDriver {
     }
 
     /**
-     * The fixed schedule assumes all four authored endpoints exist. Running a
-     * partial family would make omitted endpoints fall through to lower layers,
-     * so disable just this feature until a reload can acquire the whole set.
+     * The fixed schedule assumes every authored endpoint of a family exists:
+     * the four time profiles, or the Vivid look's base and its four time
+     * profiles. Running a partial family would make omitted endpoints fall
+     * through to lower layers, so disable just that family until a reload can
+     * acquire the whole set.
+     *
+     * @param channelPrefix the prefix every channel of the family starts with
+     * @param family        the family's name in the warning
+     * @param members       the members the warning lists
      */
-    private void disableIncompleteTimeFamily() {
+    private void disableIncompleteFamily(String channelPrefix, String family, String members) {
         boolean complete = true;
         for (LayerState layer : layersById.values()) {
-            if (isTimeLayer(layer) && layer.handle == 0) {
+            if (layer.spec.name().startsWith(channelPrefix) && layer.handle == 0) {
                 complete = false;
                 break;
             }
@@ -573,10 +633,10 @@ public final class ConfLayerDriver {
             return;
         }
 
-        LOGGER.warn("Time-of-day conf family is incomplete; disabling dawn, day, dusk, and night "
-                + "together (retry with /rtx conf reload)");
+        LOGGER.warn("{} conf family is incomplete; disabling {} together (retry with /rtx conf reload)",
+                family, members);
         for (LayerState layer : layersById.values()) {
-            if (!isTimeLayer(layer)) {
+            if (!layer.spec.name().startsWith(channelPrefix)) {
                 continue;
             }
             releaseLayer(layer);
@@ -585,10 +645,6 @@ public final class ConfLayerDriver {
             layer.lastSent = 0.0f;
             layer.sendFailureLogged = false;
         }
-    }
-
-    private static boolean isTimeLayer(LayerState layer) {
-        return layer.spec.name().startsWith(LogicChannels.TIME_PREFIX);
     }
 
     /**
@@ -729,6 +785,7 @@ public final class ConfLayerDriver {
         setTarget(LogicChannels.TIME_DAY, time.day());
         setTarget(LogicChannels.TIME_DUSK, time.dusk());
         setTarget(LogicChannels.TIME_NIGHT, time.night());
+        boolean lookMoving = targetLook(time, dtSeconds);
         boolean weatherMoving = targetWeather(world, tickDelta);
 
         // Resolve the camera-position biome once (vanilla namespace only) and
@@ -756,7 +813,7 @@ public final class ConfLayerDriver {
         // Every other target is a medium the froxel cache integrates; this one
         // tells the cache how much history to trust, so it follows them.
         setTarget(LogicChannels.VOLUMETRICS_SETTLING,
-                settling.advance(weatherMoving || anySmoothedLayerEasing(), dtSeconds));
+                settling.advance(weatherMoving || lookMoving || anySmoothedLayerEasing(), dtSeconds));
 
         for (LayerState layer : layersById.values()) {
             if (layer.handle == 0) {
@@ -765,6 +822,25 @@ public final class ConfLayerDriver {
             advance(layer, dtSeconds);
             sendIfChanged(layer);
         }
+    }
+
+    /**
+     * Eases the look strength toward the player's choice, targets the look's
+     * layers from it, and reports whether it moved this frame. The first frame
+     * after an acquire has no elapsed time and takes the choice outright, so a
+     * saved Vivid look is in place on join rather than fading in.
+     */
+    private boolean targetLook(TimeLayerStrengths time, float dtSeconds) {
+        float previous = lookStrength;
+        float target = vividLook ? 1.0f : 0.0f;
+        lookStrength = dtSeconds > 0.0f ? smoothStep(lookStrength, target, dtSeconds) : target;
+        LookLayerStrengths look = LookLayerStrengths.of(lookStrength, time);
+        setTarget(LogicChannels.LOOK_VIVID, look.base());
+        setTarget(LogicChannels.LOOK_VIVID_DAWN, look.dawn());
+        setTarget(LogicChannels.LOOK_VIVID_DAY, look.day());
+        setTarget(LogicChannels.LOOK_VIVID_DUSK, look.dusk());
+        setTarget(LogicChannels.LOOK_VIVID_NIGHT, look.night());
+        return moved(previous, lookStrength);
     }
 
     /**
@@ -871,6 +947,17 @@ public final class ConfLayerDriver {
                 currentStrength(LogicChannels.WEATHER_THUNDER));
     }
 
+    /**
+     * The Vivid look's eased strength as its conf layers receive it, for the
+     * sky and light changes that follow the same fade: 0 for the shipped look
+     * and 1 for Vivid. It is 0 whenever the look's layers are not live, an
+     * inactive driver or an unacquired look family, so the sky never shows
+     * half a look.
+     */
+    public float lookStrength() {
+        return active && lookAcquired ? lookStrength : 0.0f;
+    }
+
     private float currentStrength(String channel) {
         float strength = 0.0f;
         for (LayerState layer : channelIndex.getOrDefault(channel, List.of())) {
@@ -956,6 +1043,7 @@ public final class ConfLayerDriver {
                 int zones = 0;
                 int weather = 0;
                 int time = 0;
+                int look = 0;
                 int viewDistance = 0;
                 int volumetricSettling = 0;
                 int other = 0;
@@ -970,6 +1058,8 @@ public final class ConfLayerDriver {
                         zones++;
                     } else if (channel.startsWith(LogicChannels.TIME_PREFIX)) {
                         time++;
+                    } else if (channel.startsWith(LogicChannels.LOOK_PREFIX)) {
+                        look++;
                     } else if (channel.equals(LogicChannels.UNDERWATER)) {
                         water = true;
                     } else if (channel.equals(LogicChannels.VIEW_DISTANCE)) {
@@ -987,6 +1077,7 @@ public final class ConfLayerDriver {
                 appendCategoryCount(categories, biomes, "biome", "biomes");
                 appendCategoryCount(categories, weather, "weather", "weather");
                 appendCategoryCount(categories, time, "time profile", "time profiles");
+                appendCategoryCount(categories, look, "look profile", "look profiles");
                 appendCategoryCount(categories, zones, "zone", "zones");
                 appendCategoryCount(categories, viewDistance, "view distance", "view distance");
                 appendCategoryCount(categories, volumetricSettling, "volumetric settling", "volumetric settling");

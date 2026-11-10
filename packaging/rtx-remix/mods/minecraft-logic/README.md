@@ -20,7 +20,8 @@ Three things can decide what a rendering option is worth. When they disagree,
 the later one in this list wins.
 
 **Conf files**, which is everything in this guide. `rtx.conf` is the baseline
-and the profiles under `confs/` fade over it by situation.
+and the profiles under `confs/` fade over it by situation, and by the look the
+player selects.
 
 **The mod's settings screen**, under Options, then RTX Remix Settings. Most of
 it never argues with a profile. The controls on the Image & Exposure page are
@@ -72,6 +73,35 @@ Then reload and walk the clock:
 the clock keeps running while you type, so the second number drifts. Those
 strengths feed the blend and confirm the schedule even when the picture barely
 moves, and a look lands on the next frame rather than creeping toward it.
+
+## Looks
+
+A look is a whole art direction the player chooses, rather than a situation
+the game reaches. The mod ships two: **Natural**, which is `rtx.conf` and the
+profiles in this guide as they are, and **Vivid**, warm golden light, a deeper
+blue sky, moonlit blue nights, light haze with light shafts, soft bloom, and a
+gentle vignette. Players switch under Options, RTX Remix Settings, Lighting,
+**Look**, or with `/rtx look vivid` and `/rtx look natural`; the choice is
+saved with the mod's settings and fades with the same half-second half-life as
+a biome profile.
+
+Vivid is five profiles in `confs/looks/vivid/`. `base.conf` holds what Vivid
+sets at every time of day and in every dimension. `dawn.conf`, `day.conf`,
+`dusk.conf`, and `night.conf` follow the same Overworld schedule as the time
+profiles, so they obey the same rules: name an animated option in all four,
+and expect them to be held at zero outside the Overworld. They sit directly
+above the time profiles and below weather, so Vivid restyles the time of day
+while rain, thunder, biomes, zones, and water still win the options they name.
+With Natural selected all five are at strength zero. The five files are one
+family, like the time profiles: if any of them fails to load, all five are
+dropped, the sky stays Natural too, and `/rtx conf status` reports them
+unacquired. The tonemapping options Vivid sets are among those the Image &
+Exposure page takes over once a player moves its controls.
+
+Part of Vivid is not a conf. The mod also warms the sunlight, gives the moon a
+bluer light, softens the sun's halo, and adds an ozone layer and extra
+saturation to the sky, fading them with the same strength. Retune the conf half by editing these five
+files and running `/rtx conf reload`, as with any profile.
 
 ## Quick Start: A Zone, And Shipping It In Your Map
 
@@ -247,6 +277,11 @@ from several places with a shared channel.
 | `confs/biomes/<biome>.conf` | Camera is in that biome: 0 or 1 | 6000 | 0.01 | Half-second half-life |
 | `confs/weather/thunder.conf` | Vanilla thunder gradient: 0 to 1 | 5500 | 0.01 | Immediate; vanilla ramps the gradient over about five seconds |
 | `confs/weather/rain.conf` | Vanilla rain gradient: 0 to 1 | 5000 | 0.01 | Immediate; vanilla ramps the gradient over about five seconds |
+| `confs/looks/vivid/night.conf` | Look strength times the night schedule | 4104 | 0.50 | The look's half-life, then the clock curve below |
+| `confs/looks/vivid/dusk.conf` | Look strength times the dusk schedule | 4103 | 0.50 | The look's half-life, then the clock curve below |
+| `confs/looks/vivid/day.conf` | Look strength times the day schedule | 4102 | 0.50 | The look's half-life, then the clock curve below |
+| `confs/looks/vivid/dawn.conf` | Look strength times the dawn schedule | 4101 | 0.50 | The look's half-life, then the clock curve below |
+| `confs/looks/vivid/base.conf` | Look strength: 0 for Natural, 1 for Vivid | 4100 | 0.50 | Half-second half-life |
 | `confs/time/night.conf` | Fixed Overworld schedule | 4003 | 0.50 | The clock curve below |
 | `confs/time/dusk.conf` | Fixed Overworld schedule | 4002 | 0.50 | The clock curve below |
 | `confs/time/day.conf` | Fixed Overworld schedule | 4001 | 0.50 | The clock curve below |
@@ -445,6 +480,7 @@ with the project's source.
 | `/rtx conf reload` | Re-reads every profile in both roots and re-scans the `zones/` and `biomes/` folders. It does not scan command blocks |
 | `/rtx conf status` | Shows the profiles with a nonzero strength, and anything that failed to load |
 | `/rtx conf status all` | Everything, idle profiles included, naming each one's root. A map profile is listed as `world/<channel>` |
+| `/rtx look`, `/rtx look vivid`, `/rtx look natural` | Report or select the look; the Vivid profiles are listed as `mc.look.vivid` and its time channels |
 | `/rtx zone define <name> ...` | Creates or replaces a zone |
 | `/rtx zone status` | Each zone's channel, its strength where you stand, and a hint when its profile is missing |
 | `/rtx zone list` | The zone names and their channels |

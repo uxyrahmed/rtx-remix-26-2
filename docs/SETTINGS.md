@@ -37,6 +37,15 @@ This page shapes the sky's light and appearance, clouds, and block lights.
 Clouds still follow Minecraft's own cloud option: Off removes them regardless
 of the selected style, while Fast and Fancy draw the same geometry here.
 
+**Look** chooses the art direction. Natural is the physically based look the
+mod ships with. Vivid warms the sunlight into golden mornings and evenings,
+deepens the blue of the sky, turns nights moonlit blue, and adds light haze
+with light shafts, soft bloom, and a gentle vignette. It changes the light
+itself rather than tinting the picture, so torches keep their colour. Vivid is
+a set of lighting profiles that fade in over a few seconds; a map's own
+profiles, the weather, and the Image & Exposure page still win the options
+they set.
+
 **Block Lights** opens a table of multipliers for normal light brightness,
 grouping related block lights into a row; the far left is Off. The Copper
 Beacon is separate: right-click a placed beacon for its own controls. Lanterns

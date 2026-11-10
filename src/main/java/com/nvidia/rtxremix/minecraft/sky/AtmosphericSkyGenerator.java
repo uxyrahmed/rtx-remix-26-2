@@ -57,6 +57,8 @@ final class AtmosphericSkyGenerator {
     private static final int PASS_SINGLE_SCATTERING = 1;
     private static final int PASS_REDUCE_AND_COMPOSE = 2;
     private static final int READBACK_RING_SIZE = 3;
+    /** The shader's SkyParameters block: six std140 vec4s. */
+    private static final int SKY_PARAMETER_BYTES = 6 * 4 * Float.BYTES;
     // The generator leaves texture unit 0 active and the pixel-pack buffer unbound.
     // It binds its own textures on units past the twelve GlStateManager caches
     // bindings for, so they never need restoring or a synchronous binding query.
@@ -78,10 +80,10 @@ final class AtmosphericSkyGenerator {
     private final long[] readbackFences =
             new long[READBACK_RING_SIZE];
     private final ByteBuffer skyParameters =
-            BufferUtils.createByteBuffer(5 * 4 * Float.BYTES);
+            BufferUtils.createByteBuffer(SKY_PARAMETER_BYTES);
     /** Last parameter block actually dispatched, for skipping byte-identical regenerations. */
     private final ByteBuffer publishedSkyParameters =
-            BufferUtils.createByteBuffer(5 * 4 * Float.BYTES);
+            BufferUtils.createByteBuffer(SKY_PARAMETER_BYTES);
     private boolean hasPublishedSkyParameters;
     private int readbackWriteIndex;
     private int readbackReadIndex;
@@ -167,6 +169,7 @@ final class AtmosphericSkyGenerator {
     /**
      * Regenerates the atmospheric sky, or skips the work when nothing that feeds it changed.
      *
+     * @param style the art-direction inputs; a new {@link SkyStyle} leaves the sky physical
      * @param publishedOutputValid whether the caller still holds a live texture and dome light
      *     built from a previous call. When false the sky is regenerated regardless of the
      *     parameters, which is what recovers a world rejoin or a dimension whose time never
@@ -178,6 +181,7 @@ final class AtmosphericSkyGenerator {
             SkyLightState lightState,
             float[] upperMean,
             float mieScatteringAnisotropy,
+            SkyStyle style,
             boolean publishedOutputValid) {
         if (upperMean.length < 3) {
             throw new IllegalArgumentException(
@@ -188,6 +192,10 @@ final class AtmosphericSkyGenerator {
                 || mieScatteringAnisotropy >= 1.0f) {
             throw new IllegalArgumentException(
                     "Mie scattering anisotropy must be in [0, 1)");
+        }
+        if (!style.isValid()) {
+            throw new IllegalArgumentException(
+                    "Sky style inputs must be finite and non-negative");
         }
 
         boolean parametersChanged;
@@ -202,7 +210,7 @@ final class AtmosphericSkyGenerator {
             normalize(sunDirection);
             normalize(moonDirection);
             parametersChanged = fillSkyParameters(
-                    lightState, mieScatteringAnisotropy);
+                    lightState, mieScatteringAnisotropy, style);
         }
 
         // The parameters derive from the sky angle, which is tick-quantised, so most frames
@@ -477,7 +485,8 @@ final class AtmosphericSkyGenerator {
      */
     private boolean fillSkyParameters(
             SkyLightState lightState,
-            float mieScatteringAnisotropy) {
+            float mieScatteringAnisotropy,
+            SkyStyle style) {
         putVectorAndScalar(
                 0,
                 sunDirection,
@@ -496,9 +505,13 @@ final class AtmosphericSkyGenerator {
                 lightState.moonSourceRadiance(),
                 0.0f);
         skyParameters.putFloat(64, mieScatteringAnisotropy);
-        skyParameters.putFloat(68, 0.0f);
-        skyParameters.putFloat(72, 0.0f);
-        skyParameters.putFloat(76, 0.0f);
+        skyParameters.putFloat(68, style.ozone);
+        skyParameters.putFloat(72, style.saturation);
+        skyParameters.putFloat(76, style.sunHalo);
+        skyParameters.putFloat(80, style.multipleScattering);
+        skyParameters.putFloat(84, 0.0f);
+        skyParameters.putFloat(88, 0.0f);
+        skyParameters.putFloat(92, 0.0f);
 
         return !hasPublishedSkyParameters || skyParameters.mismatch(publishedSkyParameters) >= 0;
     }

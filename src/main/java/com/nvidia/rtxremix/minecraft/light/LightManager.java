@@ -22,6 +22,8 @@ import com.nvidia.rtxremix.minecraft.block.CopperBeaconPose;
 import com.nvidia.rtxremix.minecraft.block.SpotLightBlock;
 import com.nvidia.rtxremix.minecraft.entity.CopperBeaconAnimationClock;
 import com.nvidia.rtxremix.minecraft.entity.RemixFirstPersonPass;
+import com.nvidia.rtxremix.minecraft.logic.ConfLayerDriver;
+import com.nvidia.rtxremix.minecraft.sky.VividSky;
 import com.nvidia.rtxremix.minecraft.texture.BlockTextureManager;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import org.joml.Matrix4fc;
@@ -1038,11 +1040,13 @@ public class LightManager {
         // Only the overworld skybox has a sun and a moon. The End and the Nether pin their
         // time, so evaluating them would light a permanent noon or midnight that vanilla
         // never draws.
+        ConfLayerDriver confLayers = renderer.getConfLayerDriver();
         skyLightState = world.dimensionType().skybox() == DimensionType.Skybox.OVERWORLD
                 ? evaluateSkyLightState(
                         skyAngle(world),
                         world.getRainLevel(0.0f),
-                        world.getThunderLevel(0.0f))
+                        world.getThunderLevel(0.0f),
+                        confLayers != null ? confLayers.lookStrength() : 0.0f)
                 : SkyLightState.empty();
 
         try {
@@ -1085,18 +1089,25 @@ public class LightManager {
         return created;
     }
 
+    /**
+     * @param look the Vivid look strength, which warms the sunlight and
+     *             cools the moonlight ({@link VividSky})
+     */
     private static SkyLightState evaluateSkyLightState(
             float skyAngle,
             float rainGradient,
-            float thunderGradient) {
+            float thunderGradient,
+            float look) {
         float[] sunPosition = computeSunDirection(skyAngle);
         float[] moonPosition = {-sunPosition[0], -sunPosition[1], -sunPosition[2]};
 
         float sunLuminance = BASE_SUN_LUMINANCE * sunIntensity;
         float moonLuminance = BASE_MOON_LUMINANCE * moonIntensity;
         float[] sunSource = {sunLuminance, sunLuminance, sunLuminance};
-        float[] moonSource = {moonLuminance * 0.85f, moonLuminance * 0.9f, moonLuminance};
-        float[] sunDirect = applyTransmittance(sunSource, directAtmosphereTransmittance(sunPosition[1]));
+        float[] moonSource = VividSky.moonSource(moonLuminance, look);
+        float[] sunTransmittance = directAtmosphereTransmittance(sunPosition[1]);
+        VividSky.styleSunTransmittance(sunTransmittance, look);
+        float[] sunDirect = applyTransmittance(sunSource, sunTransmittance);
         float[] moonDirect = applyTransmittance(moonSource, directAtmosphereTransmittance(moonPosition[1]));
         sunDirect = scaleRadiance(sunDirect, weatherSunDirectScale(rainGradient, thunderGradient));
         moonDirect = scaleRadiance(moonDirect, weatherMoonDirectScale(rainGradient, thunderGradient));
