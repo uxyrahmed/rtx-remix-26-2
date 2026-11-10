@@ -52,6 +52,13 @@ class SkyRendererWeatherTest {
     }
 
     @Test
+    void starBrightnessFollowsTimeOfDayAlone() {
+        assertEquals(0.0f, SkyRenderer.starBrightness(0.0f), 1.0e-6f, "no stars at noon");
+        assertEquals(0.28125f, SkyRenderer.starBrightness(0.25f), 1.0e-6f, "fading in at sunset");
+        assertEquals(0.5f, SkyRenderer.starBrightness(0.5f), 1.0e-6f, "brightest at midnight");
+    }
+
+    @Test
     void celestialBodiesFadeAcrossFourDegreesBelowHorizon() {
         float twoDegreesBelow = -(float) Math.sin(Math.toRadians(2.0));
         float fourDegreesBelow = -(float) Math.sin(Math.toRadians(4.0));

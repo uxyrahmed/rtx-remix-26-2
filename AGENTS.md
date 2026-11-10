@@ -4,7 +4,7 @@ Context for AI coding agents working in this repository.
 
 ## Project Overview
 
-`rtx-remix-minecraft` is a Fabric mod that renders Minecraft 1.21.1 through
+`rtx-remix-minecraft` is a Fabric mod that renders Minecraft 26.2 through
 NVIDIA RTX Remix. It captures terrain, entities, particles, sky, and clouds from
 the client and submits them to the Remix runtime as a path-traced scene. The
 Java facade and JNI bridge are tracked under `rtxremix-java/`; the native
@@ -27,7 +27,7 @@ subdirectory may carry its own `AGENTS.md`; read the nearest one as well.
 
 ## Build, Run, Package, Test
 
-Java 21, Windows, and the C++ toolchain are required. Gradle fetches a missing
+Java 25, Windows, and the C++ toolchain are required. Gradle fetches a missing
 Remix runtime automatically. [Getting Started](docs/GETTING_STARTED.md) covers local overrides.
 
 ```powershell
@@ -144,7 +144,13 @@ archetypes, acquired at init, and a world root inside a save supplying zone and
 biome profiles, acquired on join. A world layer sits just above its mod
 counterpart, so a map overrides per option rather than replacing an archetype,
 and it needs the integrated server, so it is single-player only. Profiles
-resolve above `rtx.conf` and below user settings and quality presets.
+resolve above `rtx.conf` and below user settings and quality presets. The
+player's Look setting drives one more mod family, the Vivid look's base and
+time profiles just above the time profiles, and its enclosed profile above
+weather, eased from the sky light at the camera. The sky and sky lights read
+the same eased look strength for the parts a conf cannot express
+(`VividSky`); its twinkling stars and auroras are stateless functions of
+synchronized world time, like the procedural clouds.
 
 **Procedural clouds.** Cloud identity and motion are stateless functions of cell
 coordinates and synchronized world time, so clients reconstruct the same clouds
@@ -157,10 +163,12 @@ texture partitions that keep vanilla's cloud period and phase.
 merges them into chunk-column assets split into byte-capped pages per category,
 and the render thread publishes them under a frame budget and retires replaced
 pages through a bounded queue. Concurrent vanilla section builds are capped.
-Visibility rebuilds use a low-priority executor and produce a coarse frustum
-index that survives chunk slots being re-originned by replaying a render-thread
-move log. While capture is on, integrated-server chunk delivery and chunk
-unloads are paced by measured render-thread cost under separate budgets, with
+Visibility rebuilds run vanilla's section occlusion walk on a low-priority
+executor with pooled buffers, and its octree is rebuilt on pooled nodes
+(`PooledOctree`) with vanilla's structure and visit order, so vanilla's own
+hierarchical frustum culling serves Remix too. While capture is on,
+integrated-server chunk delivery and chunk unloads are paced by measured
+render-thread cost under separate budgets, with
 chunk caps on delivery and a ring-edge bypass for unloads
 (`LocalChunkBatchPacing`, `PacedUnloadQueue`, `ChunkDataSenderMixin`); a
 chunk-load neighbour re-flag is dropped if the
@@ -176,11 +184,12 @@ Each policy has a `rtxremix.*` kill switch listed in `docs/TUNING.md`.
 
 **Allocation.** The collector's concurrent work is what stretches frames at
 high render distance, so the hot vanilla paths that run per section or per
-frame are ported allocation-free and kept that way: the chunk visibility walk
-and its far-section probe (`ChunkRenderingDataPreparerMixin`,
-`terrain/visibility/`), block model variant and part selection
-(`WeightedBakedModelMixin`, `MultipartBakedModelMixin`), biome colour blending,
-and the integrated server's per-tick chunk list. Retained section meshes live
+frame are ported allocation-free and kept that way: the chunk visibility walk,
+its octree and its far-section probe (`ChunkRenderingDataPreparerMixin`,
+`RenderableChunksMixin`, `terrain/visibility/`), and biome colour blending.
+Block model variant and part selection and the integrated server's per-tick
+chunk list need no port on 26.2, where vanilla's own versions allocate
+nothing. Retained section meshes live
 in C-allocated direct buffers outside the JDK's direct-memory budget
 (`SectionMeshData`, `DirectBufferPool`) and render-region snapshots in pooled
 heap arrays (`RenderRegionStoragePool`), both under explicit reference counts:
@@ -194,7 +203,10 @@ atlas-level PBR, emissive, and luminance textures. Animated sprite uploads are
 batched and forwarded, which needs the upload hook, the patch types in the
 wrapper, and runtime support for updating a texture from memory. Glyph pages are
 mirrored on upload, because vanilla assembles them on the GPU and never keeps
-them on the CPU.
+them on the CPU. Atlas height maps are repeated until Remix's quadtree POM
+starts on cells no wider than the smallest sprite with height
+(`LabPBRConverter.heightMapRepeat`): the march wraps at sprite bounds, so a
+wider starting cell shears the relief.
 
 **Particles.** Slot preparation and CPU mesh snapshots run on a dedicated worker
 and are double buffered: the render thread publishes the previous frame's
@@ -205,7 +217,9 @@ cache with no self-shadowing, so `ParticleTint` draws soot near-black to keep
 smoke dark over a lit floor.
 
 **Entities.** Entities and block entities that vanilla already draws are
-captured in place, so a model is evaluated once rather than once for OpenGL and
+captured where vanilla submits their render states (`LevelRendererCaptureMixin`,
+`BlockEntityRenderDispatcherMixin`, `FirstPersonCaptureMixin`), so a model is
+evaluated once rather than once for OpenGL and
 again for Remix; entities outside vanilla's frustum are swept up closest-first
 under a budget, because a path tracer needs them for shadows and reflections,
 and an entity that owns a Remix light this frame is swept at any distance so
@@ -236,9 +250,16 @@ and any explicit value, against Minecraft's render distance and pushes the
 radius into `TerrainState` only on change, so `TerrainState` is always finite.
 The flood rebuilds into a second set in per-frame slices and swaps it in when
 complete; a section added mid-build marks the set dirty rather than expanding a
-set about to be replaced. `LightManager` lights are never culled. Some small
-emitters use `BuiltinEmission` instead of built-in analytic-light rules to avoid
-diluting the sampler's candidate pool.
+set about to be replaced. `LightManager` lights are never culled. Emissive
+terrain stays dim enough to keep its texture through the tonemapper, and the
+surfaces of flames and lanterns, whose rules light the scene, dimmer still
+(`BuiltinEmission`). A rule's light must leave its own block unlit, so
+lanterns and nether portals use one-sided rect lights on their faces rather
+than a sphere around the block. Glowing cubes, lava, glow lichen, end rods and
+sea pickles light only through their surfaces, to avoid diluting the sampler's
+candidate pool. Sea lanterns and froglights glow in their curated light colours
+through a `BuiltinEmission` tint, a per-channel filter that never brightens a
+channel, applied alike on the atlas build and on every animated frame.
 
 ## Invariants
 
@@ -260,14 +281,18 @@ diluting the sampler's candidate pool.
   camera-locked emitter would smear into distant geometry (`LightManager`).
 - Ordinary classes must not live in the mixin package (`MixinPackageBoundaryTest`).
 - A mixin that cancels vanilla work replays the GL, fog, and framebuffer state
-  its target would have set (`WorldRendererMixin`).
-- Never cancel `WorldRenderer.render()` itself or return early past
-  `setupTerrain`. Remix is hosted inside vanilla's traversal and captures its
+  its target would have set. The 26.2 draws the mod cancels record their own
+  render passes and leave nothing behind (`ChunkSectionsToRenderMixin`,
+  `VanillaCloudRendererMixin`, `WeatherEffectRendererMixin`); a new
+  cancellation must show the same or replay what it skips.
+- Never cancel `LevelRenderer.render()` or `LevelExtractor.extract()` themselves,
+  or return early past `compileSections` and the `SectionOcclusionGraph`
+  update. Remix is hosted inside vanilla's traversal and captures its
   sub-passes in place. Cancel only replaced draws and preserve their net state
   changes; see [Cancelling Vanilla Render Work](CONTRIBUTING.md#cancelling-vanilla-render-work).
 - A terrain recapture must clear Remix terrain, reload vanilla terrain, and
   explicitly queue the previous built set. Snapshot `builtSections` before
-  `WorldRenderer.reload()` forgets it, then call `recaptureTerrainForRemix`.
+  `LevelExtractor.allChanged()` forgets it, then call `recaptureTerrainForRemix`.
   `RtxRemixMod.rebuildLoadedTerrain()` owns this sequence. Commit settings once
   per transaction, never once per slider step.
 - Schedule world-transition work through `client.execute`, not a flag drained
@@ -314,8 +339,9 @@ diluting the sampler's candidate pool.
   `CommandLineRedaction`).
 - Vanilla's shared worker pool and section-builder concurrency stay capped
   (`WorkerPoolCap`, `SectionBuildConcurrency`).
-- Nothing but the render thread reads client light (`World.getLightLevel`,
-  `LightingProvider.get`) while capture is on: the published snapshot is then
+- Nothing but the render thread reads client light
+  (`LevelReader.getMaxLocalRawBrightness`, `LevelLightEngine.getLayerListener`)
+  while capture is on: the published snapshot is then
   the engine's live map (`ClientLightSnapshotPolicy`, `LightStorageMixin`).
 - There is one overlay toggle path. `RemixInputGate` alone owns the capture
   session. Every open request goes through `RtxRemixMod.openRemixMenu`, and
@@ -379,7 +405,7 @@ The wrapper's source of truth, in order, is:
 The root Gradle build compiles the Java sources directly and builds
 `remixbridge.dll` into `build/native/{win64|arm64}/`. There is no separate
 wrapper Java build or example launcher. The native build needs Visual Studio
-C++ tools and `JAVA_HOME` pointing to a 64-bit JDK 21. It uses the
+C++ tools and `JAVA_HOME` pointing to a 64-bit JDK 25. It uses the
 copied header unless `REMIX_INCLUDE` explicitly selects another directory.
 The supported targets are Windows x64 and ARM64; agent shells may be POSIX
 even though the Gradle wrapper and native compiler entry points are batch scripts.

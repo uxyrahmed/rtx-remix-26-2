@@ -6,12 +6,14 @@ package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
 import com.nvidia.rtxremix.minecraft.input.RemixMouseAccess;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.Mouse;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.MouseHandler;
+import net.minecraft.client.input.MouseButtonInfo;
 import org.lwjgl.glfw.GLFW;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -21,95 +23,100 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * Applies the shared Remix overlay input policy to Minecraft's mouse callbacks.
  *
  * The gate blocks Minecraft only while the overlay capture session owns input.
+ *
+ * <p>Since 1.21.9 a button callback carries a {@link MouseButtonInfo} (button and
+ * modifiers) and the handler remembers the active one as such; the touchscreen
+ * click counter 1.21.1 kept is gone.
  */
-@Mixin(Mouse.class)
+@Mixin(MouseHandler.class)
 public abstract class MouseMixin implements RemixMouseAccess {
+    @Unique
     private static final double rtxremix$HIDDEN_CURSOR_COORDINATE = -Double.MAX_VALUE;
 
     @Shadow @Final
-    private MinecraftClient client;
+    private Minecraft minecraft;
 
     @Shadow
-    private int activeButton;
+    private MouseButtonInfo activeButton;
 
     @Shadow
-    private int field_1796;
+    private void onButton(long handle, MouseButtonInfo rawButtonInfo, int action) { }
 
-    @Shadow
-    private void onMouseButton(long window, int button, int action, int mods) { }
-
+    @Unique
     private boolean rtxremix$releasingActiveButton;
 
     @Override
     public void rtxremix$releaseActiveButton() {
-        if (activeButton == -1) {
+        MouseButtonInfo active = activeButton;
+        if (active == null) {
             return;
         }
 
-        // Touchscreen mode counts outstanding presses and suppresses intermediate releases.
-        field_1796 = client.options.getTouchscreen().getValue() ? 1 : 0;
         rtxremix$releasingActiveButton = true;
         try {
-            onMouseButton(client.getWindow().getHandle(), activeButton, GLFW.GLFW_RELEASE, 0);
+            onButton(minecraft.getWindow().handle(), active, GLFW.GLFW_RELEASE);
         } finally {
             rtxremix$releasingActiveButton = false;
         }
     }
 
     @Shadow
-    private double x;
+    private double xpos;
 
     @Shadow
-    private double y;
+    private double ypos;
 
     @Shadow
-    private boolean hasResolutionChanged;
+    private boolean ignoreFirstMove;
 
-    @Inject(method = "onCursorPos", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "onMove", at = @At("HEAD"), cancellable = true)
     private void rtxremix$blockMovementWhileMenuOpen(
-            long window, double cursorX, double cursorY, CallbackInfo ci) {
+            long handle, double cursorX, double cursorY, CallbackInfo ci) {
         if (RtxRemixMod.getRemixInputGate().isCaptureSessionOpen()) {
-            x = cursorX;
-            y = cursorY;
-            hasResolutionChanged = false;
+            xpos = cursorX;
+            ypos = cursorY;
+            ignoreFirstMove = false;
             ci.cancel();
         }
     }
 
-    /* Screen rendering derives hover state from these coordinates even without a movement event. */
-    @Inject(method = "getX", at = @At("HEAD"), cancellable = true)
+    /* Screens derive hover state from these coordinates even without a movement event. */
+    @Inject(method = "xpos", at = @At("HEAD"), cancellable = true)
     private void rtxremix$hideXWhileMenuOpen(CallbackInfoReturnable<Double> cir) {
         if (RtxRemixMod.getRemixInputGate().isCaptureSessionOpen()) {
             cir.setReturnValue(rtxremix$HIDDEN_CURSOR_COORDINATE);
         }
     }
 
-    @Inject(method = "getY", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "ypos", at = @At("HEAD"), cancellable = true)
     private void rtxremix$hideYWhileMenuOpen(CallbackInfoReturnable<Double> cir) {
         if (RtxRemixMod.getRemixInputGate().isCaptureSessionOpen()) {
             cir.setReturnValue(rtxremix$HIDDEN_CURSOR_COORDINATE);
         }
     }
 
-    @Inject(method = "lockCursor", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "grabMouse", at = @At("HEAD"), cancellable = true)
     private void rtxremix$blockLockWhileMenuOpen(CallbackInfo ci) {
         if (RtxRemixMod.getRemixInputGate().isCaptureSessionOpen()) {
             ci.cancel();
         }
     }
 
-    @Inject(method = "onMouseButton", at = @At("HEAD"), cancellable = true)
-    private void rtxremix$blockClickWhileMenuOpen(long window, int button, int action, int mods, CallbackInfo ci) {
+    @Inject(method = "onButton", at = @At("HEAD"), cancellable = true)
+    private void rtxremix$blockClickWhileMenuOpen(
+            long handle, MouseButtonInfo rawButtonInfo, int action, CallbackInfo ci) {
+        MouseButtonInfo active = activeButton;
         boolean syntheticRelease = rtxremix$releasingActiveButton
                 && action == GLFW.GLFW_RELEASE
-                && button == activeButton;
+                && active != null
+                && rawButtonInfo.button() == active.button();
         if (RtxRemixMod.getRemixInputGate().isCaptureSessionOpen() && !syntheticRelease) {
             ci.cancel();
         }
     }
 
-    @Inject(method = "onMouseScroll", at = @At("HEAD"), cancellable = true)
-    private void rtxremix$blockScrollWhileMenuOpen(long window, double horizontal, double vertical, CallbackInfo ci) {
+    @Inject(method = "onScroll", at = @At("HEAD"), cancellable = true)
+    private void rtxremix$blockScrollWhileMenuOpen(long handle, double horizontal, double vertical, CallbackInfo ci) {
         if (RtxRemixMod.getRemixInputGate().isCaptureSessionOpen()) {
             ci.cancel();
         }

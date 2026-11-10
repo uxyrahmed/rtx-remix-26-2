@@ -23,7 +23,7 @@ renderer is not initialized, run `/rtx status` first.
 | `/rtx blockentities` | Toggle path-traced chests, signs, banners, and beds |
 | `/rtx particles` | Toggle path-traced particles |
 | `/rtx sky` | Toggle the path-traced sky |
-| `/rtx heldlights` | Put out or relight all lights held by the local player, like Toggle Held Lights (default `G`) |
+| `/rtx heldlights` | Put out or relight all lights held by the local player, like Toggle Held Lights (default `H`) |
 | `/rtx heldlights underwater` | Toggle whether held open flames stay lit when the holder's eyes are under water; they go out by default |
 
 The capture toggles are diagnostic. Turning one off tells you which part of the
@@ -37,6 +37,9 @@ repeat.
 
 | Command | What it does |
 |---|---|
+| `/rtx look` | Show the selected look, Natural or Vivid |
+| `/rtx look vivid` | Warm golden light, a deeper blue sky, dark moonlit nights with twinkling stars and auroras, haze with light shafts, and soft bloom |
+| `/rtx look natural` | The physically based look the mod ships with |
 | `/rtx preset` | List Remix's graphics tiers |
 | `/rtx preset <name>` | Set Remix's graphics tier for this session only; the Graphics Settings menu keeps its own saved choice |
 | `/rtx viewdistance` | Describe the band over which distant terrain fades out |
@@ -67,9 +70,9 @@ repeat.
 | `/rtx sss cutout reset` | Put the subsurface settings back to their defaults |
 
 Changing a water or subsurface value rebuilds the loaded terrain, so the world
-blinks for a moment. Of these commands, only `/rtx sky minimumopacity` writes
-your settings file. Change a value in the settings screen when you want it kept
-across launches.
+blinks for a moment. Of these commands, only `/rtx look` and
+`/rtx sky minimumopacity` write your settings file. Change a value in the
+settings screen when you want it kept across launches.
 
 ## Lighting Profiles And Zones
 
@@ -158,7 +161,7 @@ folder. Camera commands are unavailable while a benchmark is running.
 |---|---|
 | Toggle RTX Rendering (default `F8`) | Turn path tracing off, or back on, without opening chat. The new state shows above the hotbar |
 | `Alt+X` | Open the RTX Remix runtime's own developer overlay, or close whichever Remix overlay is open, including the Graphics Settings menu that the button on the settings screen opens; each menu's own close button closes it too. What you change in either overrides the mod's settings. While one is open, Minecraft receives no keyboard or mouse input at all, Escape included; close the menu or press `Alt+X` to return |
-| Toggle Held Lights (default `G`) | Put out everything lit in your hands, a torch's flame and light or a Copper Beacon's beam, and light it again |
+| Toggle Held Lights (default `H`) | Put out everything lit in your hands, a torch's flame and light or a Copper Beacon's beam, and light it again |
 | `R` | Start and stop a camera recording, once `/rtx camera record` has armed it |
 | `=` and `-` | While recording, move the time of day forward or back in normal steps. Hold `Ctrl` for larger steps |
 | `F1` | Hide the interface, including your own hand |

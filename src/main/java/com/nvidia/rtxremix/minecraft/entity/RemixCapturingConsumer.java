@@ -4,25 +4,32 @@
  */
 package com.nvidia.rtxremix.minecraft.entity;
 
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.QuadInstance;
+import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.nvidia.rtxremix.HardcodedVertex;
 import com.nvidia.rtxremix.minecraft.texture.BlockTextureManager;
-import net.minecraft.client.model.ModelPart;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
-import net.minecraft.client.render.OverlayTexture;
-import net.minecraft.client.render.VertexConsumer;
-import net.minecraft.client.render.model.BakedQuad;
-import net.minecraft.client.texture.Sprite;
-import net.minecraft.client.texture.SpriteContents;
-import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.math.Direction;
 import org.joml.Matrix4f;
+import org.joml.Matrix4fc;
+import org.joml.Vector3fc;
 
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.stream.Stream;
+import com.google.common.collect.ImmutableList;
+import net.minecraft.client.model.geom.ModelPart;
+import net.minecraft.client.model.geom.builders.UVPair;
+import net.minecraft.client.resources.model.geometry.BakedQuad;
+import net.minecraft.client.renderer.texture.OverlayTexture;
+import net.minecraft.client.renderer.texture.SpriteContents;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.core.Direction;
+import net.minecraft.resources.Identifier;
 
 /**
  * A {@link VertexConsumer} that captures vertex data for RTX Remix.
@@ -30,8 +37,8 @@ import java.util.WeakHashMap;
  * <p>Every consumer is fed inside a Remix capture pass, so the geometry it stores is
  * local to the pose that produced it and the pose itself is recorded as a bone
  * through {@link EntityRenderContext}. The matrix-aware paths
- * ({@code vertex(MatrixStack.Entry, ...)}, {@code vertex(Matrix4f, ...)} and
- * {@code quad(...)} for {@link BakedQuad} input) register the pose and keep the
+ * ({@code addVertex(PoseStack.Pose, ...)}, {@code addVertex(Matrix4fc, ...)} and
+ * {@code putBakedQuad(...)} for {@link BakedQuad} input) register the pose and keep the
  * untransformed coordinates, and {@code CuboidMixin} hands over whole cuboids by
  * identity through {@link #acceptCuboid}. Rigid instancing needs exactly that: a
  * mesh that never changes and a transform that does.
@@ -93,7 +100,7 @@ public class RemixCapturingConsumer implements VertexConsumer {
     private float vnx, vny, vnz;
     private float vu, vv;
     private int vColor = 0xFFFFFFFF;
-    private int vOverlay = OverlayTexture.DEFAULT_UV;
+    private int vOverlay = OverlayTexture.NO_OVERLAY;
     private boolean vertexOpen = false;
     private boolean explicitNormal = false;
     private int currentVertexBoneIndex = -1;
@@ -143,12 +150,19 @@ public class RemixCapturingConsumer implements VertexConsumer {
     private static final long QUAD_SLOT_3 = 0xcbbb9d5dc1059ed8L;
     private static final long PART_HASH_SCHEMA = 0x629a292a367cd507L;
 
-    // The BakedQuad currently streaming through quad(), so its bake-time digest
-    // can be cached on the quad itself instead of recomputed every frame.
+    // The BakedQuad currently streaming through putBakedQuad(), so its bake-time
+    // digest can be cached on the quad itself instead of recomputed every frame.
     private final SingletonCuboidIterator singletonCuboidIterator = new SingletonCuboidIterator();
     private int pendingBakedQuadStart = NO_VERTICES;
     private BakedQuadStaticGeometryCache pendingBakedQuadCache;
     private int[] pendingBakedQuadVertexData;
+    /**
+     * Words of the baked quad being captured, compared against the copy the quad's
+     * cache keeps; see {@link #bakedQuadWords}.
+     */
+    private final int[] bakedQuadWords = new int[BAKED_QUAD_WORDS];
+    /** Four corners of position and texture coordinate, then the face direction. */
+    static final int BAKED_QUAD_WORDS = VERTICES_PER_QUAD * 5 + 1;
 
     private final int[] partStart = new int[MAX_PARTS];
     private final int[] partVertexCount = new int[MAX_PARTS];
@@ -162,14 +176,14 @@ public class RemixCapturingConsumer implements VertexConsumer {
     private int layerIndex = 0;
     // Tagged onto each part so submit can key by cuboid identity. Null for
     // parts that came from baked quads or direct matrix vertices.
-    private final ModelPart.Quad[][] partSides = new ModelPart.Quad[MAX_PARTS][];
+    private final ModelPart.Polygon[][] partSides = new ModelPart.Polygon[MAX_PARTS][];
     /**
      * The atlas sprite each cuboid part was painted with; null for a cuboid drawn
      * without {@code SpriteTexturedVertexConsumer} and for every non-cuboid part.
      * Keyed alongside {@code partSides}: one cuboid is baked once and painted with
      * many sprites, and the rebuilt mesh bakes the sprite's UV rectangle.
      */
-    private final Sprite[] partSprite = new Sprite[MAX_PARTS];
+    private final TextureAtlasSprite[] partSprite = new TextureAtlasSprite[MAX_PARTS];
     private final int[] partTint = new int[MAX_PARTS];
     /**
      * The terrain layer of the block item each part came from, or
@@ -240,7 +254,7 @@ public class RemixCapturingConsumer implements VertexConsumer {
      * Registers {@code currentPose} as a new bone when it differs from the last pose
      * this consumer saw, and returns the bone index the next vertex belongs to.
      */
-    private int detectBoneChange(Matrix4f currentPose) {
+    private int detectBoneChange(Matrix4fc currentPose) {
         EntityRenderContext ctx = EntityRenderContext.get();
         if (!lastPoseValid || !lastPose.equals(currentPose)) {
             ctx.pushBone(currentPose);
@@ -261,7 +275,7 @@ public class RemixCapturingConsumer implements VertexConsumer {
      *
      * @return the bone index assigned to this cuboid
      */
-    public int beginCuboid(Matrix4f pose) {
+    public int beginCuboid(Matrix4fc pose) {
         int boneIndex = EntityRenderContext.get().pushBone(pose);
         lastPose.set(pose);
         lastPoseValid = true;
@@ -275,30 +289,31 @@ public class RemixCapturingConsumer implements VertexConsumer {
      * untransformed and the entry's pose becomes the part's instance transform.
      */
     @Override
-    public VertexConsumer vertex(MatrixStack.Entry matrix, float x, float y, float z) {
-        beginVertex(detectBoneChange(matrix.getPositionMatrix()));
+    public VertexConsumer addVertex(PoseStack.Pose matrix, float x, float y, float z) {
+        beginVertex(detectBoneChange(matrix.pose()));
         vx = x; vy = y; vz = z;
         return this;
     }
 
     /**
      * Captures direct matrix-based quads, most notably held-map backgrounds,
-     * map pixels, and map decorations, as local geometry plus a bone transform.
+     * map pixels, map decorations and text glyphs, as local geometry plus a bone
+     * transform.
      *
      * <p>The vanilla default implementation transforms the position first and
-     * then calls {@link #vertex(float, float, float)}. That bakes animated hand
+     * then calls {@link #addVertex(float, float, float)}. That bakes animated hand
      * transforms into the mesh and prevents the geometry cache from remaining
      * stable between frames.
      */
     @Override
-    public VertexConsumer vertex(Matrix4f matrix, float x, float y, float z) {
+    public VertexConsumer addVertex(Matrix4fc matrix, float x, float y, float z) {
         beginVertex(detectBoneChange(matrix));
         vx = x; vy = y; vz = z;
         return this;
     }
 
     @Override
-    public VertexConsumer vertex(float x, float y, float z) {
+    public VertexConsumer addVertex(float x, float y, float z) {
         beginVertex(-1);
         vx = x; vy = y; vz = z;
         return this;
@@ -307,20 +322,20 @@ public class RemixCapturingConsumer implements VertexConsumer {
     // ---- VertexConsumer: color ----
 
     @Override
-    public VertexConsumer color(int red, int green, int blue, int alpha) {
+    public VertexConsumer setColor(int red, int green, int blue, int alpha) {
         vColor = ((alpha & 0xFF) << 24) | ((red & 0xFF) << 16) |
                  ((green & 0xFF) << 8) | (blue & 0xFF);
         return this;
     }
 
     @Override
-    public VertexConsumer color(float red, float green, float blue, float alpha) {
-        return color((int)(red * 255), (int)(green * 255),
+    public VertexConsumer setColor(float red, float green, float blue, float alpha) {
+        return setColor((int)(red * 255), (int)(green * 255),
                      (int)(blue * 255), (int)(alpha * 255));
     }
 
     @Override
-    public VertexConsumer color(int argb) {
+    public VertexConsumer setColor(int argb) {
         vColor = argb;
         return this;
     }
@@ -328,7 +343,7 @@ public class RemixCapturingConsumer implements VertexConsumer {
     // ---- VertexConsumer: texture ----
 
     @Override
-    public VertexConsumer texture(float u, float v) {
+    public VertexConsumer setUv(float u, float v) {
         vu = u; vv = v;
         return this;
     }
@@ -336,13 +351,13 @@ public class RemixCapturingConsumer implements VertexConsumer {
     // ---- VertexConsumer: overlay ----
 
     @Override
-    public VertexConsumer overlay(int u, int v) {
+    public VertexConsumer setUv1(int u, int v) {
         vOverlay = ((v & 0xFFFF) << 16) | (u & 0xFFFF);
         return this;
     }
 
     @Override
-    public VertexConsumer overlay(int uv) {
+    public VertexConsumer setOverlay(int uv) {
         vOverlay = uv;
         return this;
     }
@@ -350,12 +365,12 @@ public class RemixCapturingConsumer implements VertexConsumer {
     // ---- VertexConsumer: light ----
 
     @Override
-    public VertexConsumer light(int u, int v) {
+    public VertexConsumer setUv2(int u, int v) {
         return this;
     }
 
     @Override
-    public VertexConsumer light(int uv) {
+    public VertexConsumer setLight(int uv) {
         return this;
     }
 
@@ -363,15 +378,21 @@ public class RemixCapturingConsumer implements VertexConsumer {
 
     /** The normal stays local like the position; the instance transform poses both. */
     @Override
-    public VertexConsumer normal(MatrixStack.Entry matrix, float x, float y, float z) {
-        return normal(x, y, z);
+    public VertexConsumer setNormal(PoseStack.Pose matrix, float x, float y, float z) {
+        return setNormal(x, y, z);
     }
 
     @Override
-    public VertexConsumer normal(float x, float y, float z) {
+    public VertexConsumer setNormal(float x, float y, float z) {
         vnx = x; vny = y; vnz = z;
         explicitNormal = true;
         finalizeVertex();
+        return this;
+    }
+
+    /** Line primitives never reach a capture: their layers are not capturable. */
+    @Override
+    public VertexConsumer setLineWidth(float width) {
         return this;
     }
 
@@ -385,7 +406,7 @@ public class RemixCapturingConsumer implements VertexConsumer {
         vnx = 0.0f; vny = 0.0f; vnz = 1.0f;
         vu = 0.0f; vv = 0.0f;
         vColor = 0xFFFFFFFF;
-        vOverlay = OverlayTexture.DEFAULT_UV;
+        vOverlay = OverlayTexture.NO_OVERLAY;
     }
 
     private void flushOpenVertex() {
@@ -435,7 +456,7 @@ public class RemixCapturingConsumer implements VertexConsumer {
         explicitNormal = false;
         currentVertexBoneIndex = -1;
         vColor = 0xFFFFFFFF;
-        vOverlay = OverlayTexture.DEFAULT_UV;
+        vOverlay = OverlayTexture.NO_OVERLAY;
     }
 
     /** Overlay rows below this hold the red damage tint; the rest hold the white flash. */
@@ -464,7 +485,7 @@ public class RemixCapturingConsumer implements VertexConsumer {
      * scene-instance update, never a mesh create.
      */
     public static int applyEntityOverlay(int argbColor, int packedOverlay) {
-        if (packedOverlay == OverlayTexture.DEFAULT_UV) {
+        if (packedOverlay == OverlayTexture.NO_OVERLAY) {
             return argbColor;
         }
 
@@ -698,46 +719,25 @@ public class RemixCapturingConsumer implements VertexConsumer {
         }
     }
 
-    // ---- BakedQuad interception (items, BakedModel entities) ----
+    // ---- BakedQuad interception (items, block models in entity captures) ----
 
-    // Scratch for the four-argument-per-vertex quad overload below. Safe to
-    // pool: the ten-arg quad() consumes both arrays synchronously (this
-    // override and any delegate's) and nothing retains them. Brightness is
-    // always all-ones here.
-    //
-    // Per instance, not static: the ten-arg quad() hands these arrays to an
-    // arbitrary downstream VertexConsumer, so a process-wide array would let a
-    // single downstream writer corrupt brightness for every item quad after it.
-    private final float[] quadUnitBrightness = {1.0f, 1.0f, 1.0f, 1.0f};
-    private final int[] quadLightScratch = new int[4];
     private final int[] quadColors = new int[4];
 
     /**
-     * Allocation-free replacement for the vanilla default, which allocates two
-     * arrays per quad; values and downstream calls are identical.
-     */
-    @Override
-    public void quad(MatrixStack.Entry matrixEntry, BakedQuad quad,
-                     float red, float green, float blue, float alpha, int light, int overlay) {
-        quadLightScratch[0] = light;
-        quadLightScratch[1] = light;
-        quadLightScratch[2] = light;
-        quadLightScratch[3] = light;
-        this.quad(matrixEntry, quad, quadUnitBrightness, red, green, blue, alpha,
-                quadLightScratch, overlay, false);
-    }
-
-    /**
-     * Intercepts BakedModel quad rendering so item animation is captured as a bone transform
+     * Intercepts baked-quad rendering so item animation is captured as a bone transform
      * rather than baked into vertex positions.
      *
-     * <p>Vanilla's default {@code quad()} implementation applies the matrix and calls
-     * {@code vertex(float, float, float)}, bypassing bone detection. This override instead:
+     * <p>Vanilla's default {@code putBakedQuad()} applies the pose and calls the
+     * per-vertex {@code addVertex}, bypassing bone detection. This override instead:
      * <ol>
-     *   <li>Pushes the {@code MatrixStack.Entry} as a bone via {@link #detectBoneChange}</li>
-     *   <li>Reads LOCAL (model-space) positions directly from {@link BakedQuad#getVertexData()}</li>
+     *   <li>Pushes the pose as a bone via {@link #detectBoneChange}</li>
+     *   <li>Reads LOCAL (model-space) positions directly from {@link BakedQuad#position(int)}</li>
      *   <li>Emits via {@link #acceptModelSpaceVertex}</li>
      * </ol>
+     *
+     * <p>Since 26.1 a baked quad carries no colour of its own: the
+     * {@link QuadInstance} holds each corner's colour, tint included, and the overlay,
+     * which is folded into the captured colour as for every other vertex.
      *
      * <p>Result: one pooled local-space mesh per item geometry, with the vanilla
      * pose applied as an ordinary Remix instance transform each frame.
@@ -757,67 +757,75 @@ public class RemixCapturingConsumer implements VertexConsumer {
      * rebuilt, the card would be a bare frame.
      */
     @Override
-    public void quad(MatrixStack.Entry matrixEntry, BakedQuad quad, float[] brightnesses,
-                     float red, float green, float blue, float alpha, int[] lights, int overlay,
-                     boolean colorize) {
+    public void putBakedQuad(PoseStack.Pose pose, BakedQuad quad, QuadInstance instance) {
         // The pose is fixed for the whole quad, so resolve the pivot once here
         // rather than per vertex below.
-        int quadBoneIndex = detectBoneChange(matrixEntry.getPositionMatrix());
+        int quadBoneIndex = detectBoneChange(pose.pose());
 
-        int[] vd = quad.getVertexData();
+        TextureAtlasSprite sprite = quad.materialInfo().sprite();
         int boundsMin = 0;
         int boundsMax = 0;
-        if (quad.getSprite() != null) {
-            boundsMin = HardcodedVertex.packHalf2x16(quad.getSprite().getMinU(), quad.getSprite().getMinV());
-            boundsMax = HardcodedVertex.packHalf2x16(quad.getSprite().getMaxU(), quad.getSprite().getMaxV());
+        if (sprite != null) {
+            boundsMin = HardcodedVertex.packHalf2x16(sprite.getU0(), sprite.getV0());
+            boundsMax = HardcodedVertex.packHalf2x16(sprite.getU1(), sprite.getV1());
         }
 
-        // Per-face normal: same for all 4 vertices on a BakedQuad (offset 7 of first vertex).
-        int pn = vd[7];
-        float fnx = (byte)(pn & 0xFF) / 127f;
-        float fny = (byte)((pn >> 8) & 0xFF) / 127f;
-        float fnz = (byte)((pn >> 16) & 0xFF) / 127f;
-        if (fnx * fnx + fny * fny + fnz * fnz < 0.01f) {
-            // Packed normal is zero, so compute from edge cross-product
-            float x0 = Float.intBitsToFloat(vd[0]),  y0 = Float.intBitsToFloat(vd[1]),  z0 = Float.intBitsToFloat(vd[2]);
-            float x1 = Float.intBitsToFloat(vd[8]),  y1 = Float.intBitsToFloat(vd[9]),  z1 = Float.intBitsToFloat(vd[10]);
-            float x2 = Float.intBitsToFloat(vd[16]), y2 = Float.intBitsToFloat(vd[17]), z2 = Float.intBitsToFloat(vd[18]);
-            float ex = x1-x0, ey = y1-y0, ez = z1-z0;
-            float fx = x2-x0, fy = y2-y0, fz = z2-z0;
-            fnx = ey*fz - ez*fy; fny = ez*fx - ex*fz; fnz = ex*fy - ey*fx;
-            float len = (float) Math.sqrt(fnx*fnx + fny*fny + fnz*fnz);
-            if (len > 0f) { fnx /= len; fny /= len; fnz /= len; }
+        // A 26.x baked quad stores no normal of its own, only its face direction, which
+        // for a rotated element is merely the nearest axis. The geometric normal is the
+        // exact face normal the 1.21.1 quad baked in, oriented to the face direction.
+        Vector3fc p0 = quad.position0();
+        Vector3fc p1 = quad.position1();
+        Vector3fc p2 = quad.position2();
+        float ex = p1.x() - p0.x(), ey = p1.y() - p0.y(), ez = p1.z() - p0.z();
+        float fx = p2.x() - p0.x(), fy = p2.y() - p0.y(), fz = p2.z() - p0.z();
+        float fnx = ey * fz - ez * fy;
+        float fny = ez * fx - ex * fz;
+        float fnz = ex * fy - ey * fx;
+        Vector3fc facing = quad.direction().getUnitVec3f();
+        float len = (float) Math.sqrt(fnx * fnx + fny * fny + fnz * fnz);
+        if (len > 0.000001f) {
+            float sign = fnx * facing.x() + fny * facing.y() + fnz * facing.z() < 0f ? -1f : 1f;
+            fnx = fnx / len * sign;
+            fny = fny / len * sign;
+            fnz = fnz / len * sign;
+        } else {
+            fnx = facing.x();
+            fny = facing.y();
+            fnz = facing.z();
         }
 
         // Flush any open streamed vertex first, so vertexCount is exactly
         // where this quad's four vertices will land.
         flushOpenVertex();
         int quadStart = vertexCount;
+        int overlay = instance.overlayCoords();
         for (int v = 0; v < 4; v++) {
-            quadColors[v] = bakedQuadVertexColor(vd, v, brightnesses, red, green, blue, alpha, overlay, colorize);
+            quadColors[v] = applyEntityOverlay(instance.getColor(v), overlay);
         }
-        boolean cardFace = isFullCardFace(vd, quad.getFace());
+        boolean cardFace = isFullCardFace(quad);
         int[] rects = cardFace
                 && EntityRenderContext.get().getBlockItemLayer() != BlockTextureManager.L_GLASS
-                ? cardFaceRects(quad.getSprite())
+                ? cardFaceRects(sprite)
                 : null;
         if (rects != null) {
-            emitCardFaceRects(vd, rects, quad.getSprite().getContents(), quadColors,
+            emitCardFaceRects(quad, rects, sprite.contents(), quadColors,
                     fnx, fny, fnz, boundsMin, boundsMax, quadBoneIndex);
             return;
         }
-        if (quad instanceof BakedQuadStaticGeometryCache cache) {
+        // BakedQuad is a final record, so the cast goes through Object; the interface
+        // is added at runtime by BakedQuadMixin.
+        if ((Object) quad instanceof BakedQuadStaticGeometryCache cache) {
             pendingBakedQuadStart = vertexCount;
             pendingBakedQuadCache = cache;
-            pendingBakedQuadVertexData = vd;
+            pendingBakedQuadVertexData = bakedQuadWords(quad, bakedQuadWords);
         }
         try {
             for (int v = 0; v < 4; v++) {
-                int off = v * 8;
+                Vector3fc position = quad.position(v);
+                long uv = quad.packedUV(v);
                 acceptModelSpaceVertex(
-                        Float.intBitsToFloat(vd[off]), Float.intBitsToFloat(vd[off + 1]),
-                        Float.intBitsToFloat(vd[off + 2]), quadColors[v],
-                        Float.intBitsToFloat(vd[off + 4]), Float.intBitsToFloat(vd[off + 5]),
+                        position.x(), position.y(), position.z(), quadColors[v],
+                        UVPair.unpackU(uv), UVPair.unpackV(uv),
                         fnx, fny, fnz, boundsMin, boundsMax, quadBoneIndex);
             }
             if (cardFace) markCardFace(quadStart);
@@ -829,27 +837,24 @@ public class RemixCapturingConsumer implements VertexConsumer {
     }
 
     /**
-     * The colour {@code VertexConsumer.quad()} gives vertex {@code v}: the supplied tint,
-     * times the baked vertex colour when {@code colorize} is set, under the entity overlay.
+     * Writes the bake-time words of {@code quad} into {@code out}: each corner's position
+     * bits and packed texture coordinate, then the face direction. The quad's static
+     * digest is cached on the quad against exactly these words, so a quad whose
+     * geometry differs can never be handed another's digest.
      */
-    private int bakedQuadVertexColor(int[] vd, int v, float[] brightnesses,
-                                     float red, float green, float blue, float alpha,
-                                     int overlay, boolean colorize) {
-        float br = (brightnesses != null && v < brightnesses.length) ? brightnesses[v] : 1f;
-        int vc = vd[v * 8 + 3];
-        int fr, fg, fb;
-        if (colorize) {
-            // BakedQuad packs its color element as 0xAABBGGRR.
-            fr = Math.min(255, (int) ((vc & 0xFF) * br * red));
-            fg = Math.min(255, (int) (((vc >> 8) & 0xFF) * br * green));
-            fb = Math.min(255, (int) (((vc >> 16) & 0xFF) * br * blue));
-        } else {
-            fr = Math.min(255, (int) (br * red * 255.0f));
-            fg = Math.min(255, (int) (br * green * 255.0f));
-            fb = Math.min(255, (int) (br * blue * 255.0f));
+    static int[] bakedQuadWords(BakedQuad quad, int[] out) {
+        for (int v = 0; v < VERTICES_PER_QUAD; v++) {
+            Vector3fc position = quad.position(v);
+            long uv = quad.packedUV(v);
+            int off = v * 5;
+            out[off] = Float.floatToRawIntBits(position.x());
+            out[off + 1] = Float.floatToRawIntBits(position.y());
+            out[off + 2] = Float.floatToRawIntBits(position.z());
+            out[off + 3] = (int) uv;
+            out[off + 4] = (int) (uv >>> 32);
         }
-        int fa = Math.min(255, (int) (alpha * 255.0f));
-        return applyEntityOverlay((fa << 24) | (fr << 16) | (fg << 8) | fb, overlay);
+        out[VERTICES_PER_QUAD * 5] = quad.direction().ordinal();
+        return out;
     }
 
     /**
@@ -858,16 +863,17 @@ public class RemixCapturingConsumer implements VertexConsumer {
      * of its two planes. Positions are compared exactly; the generator bakes them from
      * integer sixteenths, so they carry no rounding.
      */
-    static boolean isFullCardFace(int[] vertexData, Direction face) {
+    static boolean isFullCardFace(BakedQuad quad) {
+        Direction face = quad.direction();
         if (face != Direction.NORTH && face != Direction.SOUTH) return false;
-        float plane = Float.intBitsToFloat(vertexData[2]);
+        float plane = quad.position0().z();
         if (plane != CARD_FRONT_Z && plane != CARD_BACK_Z) return false;
         int corners = 0;
         for (int v = 0; v < 4; v++) {
-            int off = v * 8;
-            float x = Float.intBitsToFloat(vertexData[off]);
-            float y = Float.intBitsToFloat(vertexData[off + 1]);
-            float z = Float.intBitsToFloat(vertexData[off + 2]);
+            Vector3fc position = quad.position(v);
+            float x = position.x();
+            float y = position.y();
+            float z = position.z();
             if ((x != 0f && x != 1f) || (y != 0f && y != 1f) || z != plane) return false;
             corners |= 1 << ((x == 0f ? 0 : 1) + (y == 0f ? 0 : 2));
         }
@@ -878,12 +884,12 @@ public class RemixCapturingConsumer implements VertexConsumer {
      * The opaque-texel rectangles of {@code sprite}, or null when it has none to give: no
      * sprite, or one past {@link #MAX_CARD_FACE_RECTS}.
      */
-    private static int[] cardFaceRects(Sprite sprite) {
+    private static int[] cardFaceRects(TextureAtlasSprite sprite) {
         if (sprite == null) return null;
-        SpriteContents contents = sprite.getContents();
+        SpriteContents contents = sprite.contents();
         int[] rects = CARD_FACE_RECTS.get(contents);
         if (rects == null) {
-            rects = opaqueRects(opaqueTexels(contents), contents.getWidth(), contents.getHeight(),
+            rects = opaqueRects(opaqueTexels(contents), contents.width(), contents.height(),
                     MAX_CARD_FACE_RECTS);
             CARD_FACE_RECTS.put(contents, rects == null ? BUSY_CARD : rects);
         }
@@ -895,13 +901,13 @@ public class RemixCapturingConsumer implements VertexConsumer {
      * ItemModelGenerator stands its slivers on, frames united the same way.
      */
     private static boolean[] opaqueTexels(SpriteContents contents) {
-        int w = contents.getWidth();
-        int h = contents.getHeight();
+        int w = contents.width();
+        int h = contents.height();
         boolean[] opaque = new boolean[w * h];
-        contents.getDistinctFrameCount().forEach(frame -> {
+        contents.getUniqueFrames().forEach(frame -> {
             for (int y = 0; y < h; y++) {
                 for (int x = 0; x < w; x++) {
-                    if (!contents.isPixelTransparent(frame, x, y)) opaque[y * w + x] = true;
+                    if (!contents.isTransparent(frame, x, y)) opaque[y * w + x] = true;
                 }
             }
         });
@@ -973,23 +979,24 @@ public class RemixCapturingConsumer implements VertexConsumer {
      * take the place of the original quad's corners in its winding, and its UVs are read
      * off the original face's mapping, so a mirrored back face stays mirrored.
      */
-    private void emitCardFaceRects(int[] vd, int[] rects, SpriteContents contents, int[] colors,
+    private void emitCardFaceRects(BakedQuad quad, int[] rects, SpriteContents contents, int[] colors,
                                    float nx, float ny, float nz, int boundsMin, int boundsMax, int bone) {
-        int w = contents.getWidth();
-        int h = contents.getHeight();
-        float z = Float.intBitsToFloat(vd[2]);
+        int w = contents.width();
+        int h = contents.height();
+        float z = quad.position0().z();
         int[] cornerX = new int[4];
         int[] cornerY = new int[4];
         float[] cornerU = new float[4];
         float[] cornerV = new float[4];
         for (int v = 0; v < 4; v++) {
-            int off = v * 8;
-            int cx = Float.intBitsToFloat(vd[off]) == 0f ? 0 : 1;
-            int cy = Float.intBitsToFloat(vd[off + 1]) == 0f ? 0 : 1;
+            Vector3fc position = quad.position(v);
+            long uv = quad.packedUV(v);
+            int cx = position.x() == 0f ? 0 : 1;
+            int cy = position.y() == 0f ? 0 : 1;
             cornerX[v] = cx;
             cornerY[v] = cy;
-            cornerU[cy * 2 + cx] = Float.intBitsToFloat(vd[off + 4]);
-            cornerV[cy * 2 + cx] = Float.intBitsToFloat(vd[off + 5]);
+            cornerU[cy * 2 + cx] = UVPair.unpackU(uv);
+            cornerV[cy * 2 + cx] = UVPair.unpackV(uv);
         }
         for (int r = 0; r < rects.length; r += 4) {
             float x0 = cardX(rects[r], w);
@@ -1232,10 +1239,10 @@ public class RemixCapturingConsumer implements VertexConsumer {
     public long getPartHash(int part) { return partHash[part]; }
 
     /** The cuboid this part came from, or null if it came from another source. */
-    public ModelPart.Quad[] getPartSides(int part) { return partSides[part]; }
+    public ModelPart.Polygon[] getPartSides(int part) { return partSides[part]; }
 
     /** The sprite a cuboid part was painted with, or null; see {@link #acceptCuboid}. */
-    public Sprite getPartSprite(int part) { return partSprite[part]; }
+    public TextureAtlasSprite getPartSprite(int part) { return partSprite[part]; }
 
     public int getPartTint(int part) { return partTint[part]; }
 
@@ -1261,18 +1268,17 @@ public class RemixCapturingConsumer implements VertexConsumer {
      * {@link #emitCuboidGeometry}, so a pooled cuboid costs no vertex work at capture.
      *
      * <p>{@code sides} is retained for its <em>identity</em>, not its contents.
-     * {@code ModelPart.Cuboid.sides}, {@code Quad.vertices}/{@code direction} and
-     * {@code Vertex.pos}/{@code u}/{@code v} are all final and written once at bake
-     * time, so one array reference means one fixed set of positions, normals and
-     * UVs for the life of the object. A resource reload bakes new objects, which
-     * produce new keys rather than stale hits.
+     * {@code ModelPart.Cube.polygons} is final, and {@code Polygon} and {@code Vertex}
+     * are records written once at bake time, so one array reference means one fixed set
+     * of positions, normals and UVs for the life of the object. A resource reload bakes
+     * new objects, which produce new keys rather than stale hits.
      *
      * <p>{@code sprite} is the atlas sprite the cuboid was painted with, null when it
      * was drawn without {@code SpriteTexturedVertexConsumer}. It is identity too: an
      * atlas re-stitch creates new Sprite objects, and the wrapper's UV remap is
      * reproduced by {@link #emitCuboidGeometry} when the cuboid is rebuilt.
      */
-    public void acceptCuboid(ModelPart.Quad[] sides, int color, Matrix4f pose, Sprite sprite) {
+    public void acceptCuboid(ModelPart.Polygon[] sides, int color, Matrix4fc pose, TextureAtlasSprite sprite) {
         int boneIndex = beginCuboid(pose);
         closeOpenPart();
         if (parts >= MAX_PARTS) return;
@@ -1300,7 +1306,7 @@ public class RemixCapturingConsumer implements VertexConsumer {
      * pay a full model evaluation on every one. The bone index refers to the
      * caller's own snapshotted transforms, not to this consumer's bone tracking.
      */
-    public void replayCuboidPart(ModelPart.Quad[] sides, int color, int boneIndex, Sprite sprite) {
+    public void replayCuboidPart(ModelPart.Polygon[] sides, int color, int boneIndex, TextureAtlasSprite sprite) {
         closeOpenPart();
         if (parts >= MAX_PARTS) return;
         partStart[parts] = NO_VERTICES;
@@ -1328,28 +1334,29 @@ public class RemixCapturingConsumer implements VertexConsumer {
      * intercepted, so the pooled mesh carries the atlas UVs and the texcoord bounds
      * derived from them describe the sprite, not the whole atlas.
      */
-    public void emitCuboidGeometry(ModelPart.Quad[] sides, int color, int boneIndex, Sprite sprite) {
+    public void emitCuboidGeometry(ModelPart.Polygon[] sides, int color, int boneIndex, TextureAtlasSprite sprite) {
         emitCuboidGeometry(sides, color, boneIndex, sprite, 0f);
     }
 
     /**
-     * {@link #emitCuboidGeometry(ModelPart.Quad[], int, int, Sprite)} with every vertex
+     * {@link #emitCuboidGeometry(ModelPart.Polygon[], int, int, TextureAtlasSprite)} with every vertex
      * moved {@code shellExpand} block units along its face normal, so several paintings
      * of one cuboid can be stacked into a single mesh at increasing depths.
      */
-    public void emitCuboidGeometry(ModelPart.Quad[] sides, int color, int boneIndex, Sprite sprite,
+    public void emitCuboidGeometry(ModelPart.Polygon[] sides, int color, int boneIndex, TextureAtlasSprite sprite,
                                    float shellExpand) {
-        for (ModelPart.Quad quad : sides) {
-            float qnx = quad.direction.x();
-            float qny = quad.direction.y();
-            float qnz = quad.direction.z();
-            for (ModelPart.Vertex vertex : quad.vertices) {
-                float u = sprite == null ? vertex.u : sprite.getFrameU(vertex.u);
-                float v = sprite == null ? vertex.v : sprite.getFrameV(vertex.v);
+        for (ModelPart.Polygon quad : sides) {
+            Vector3fc normal = quad.normal();
+            float qnx = normal.x();
+            float qny = normal.y();
+            float qnz = normal.z();
+            for (ModelPart.Vertex vertex : quad.vertices()) {
+                float u = sprite == null ? vertex.u() : sprite.getU(vertex.u());
+                float v = sprite == null ? vertex.v() : sprite.getV(vertex.v());
                 acceptModelSpaceVertex(
-                        vertex.pos.x / 16f + qnx * shellExpand,
-                        vertex.pos.y / 16f + qny * shellExpand,
-                        vertex.pos.z / 16f + qnz * shellExpand,
+                        vertex.worldX() + qnx * shellExpand,
+                        vertex.worldY() + qny * shellExpand,
+                        vertex.worldZ() + qnz * shellExpand,
                         color,
                         u, v,
                         qnx, qny, qnz,
@@ -1367,14 +1374,32 @@ public class RemixCapturingConsumer implements VertexConsumer {
      * cuboid list. A pending iterator is never overwritten; reentrant or custom
      * traversal falls back to vanilla's fresh iterator.
      */
-    public Iterator<ModelPart.Cuboid> acquireSingletonCuboidIterator(ModelPart.Cuboid cuboid) {
+    public Iterator<ModelPart.Cube> acquireSingletonCuboidIterator(ModelPart.Cube cuboid) {
         return singletonCuboidIterator.tryReset(cuboid) ? singletonCuboidIterator : null;
     }
 
-    private static final class SingletonCuboidIterator implements Iterator<ModelPart.Cuboid> {
-        private ModelPart.Cuboid cuboid;
+    /**
+     * The class 26.x model baking gives a part's one-cube list: {@code PartDefinition.bake}
+     * collects with {@code Stream.toList()}, whose result for one element is the JDK's
+     * unmodifiable list. Taken from the same call, so it names whatever class this JDK
+     * returns.
+     */
+    private static final Class<?> BAKED_SINGLETON_LIST = Stream.of(Boolean.TRUE).toList().getClass();
 
-        boolean tryReset(ModelPart.Cuboid cuboid) {
+    /**
+     * Whether {@code cubes} is an unmodifiable one-element list, the only shape the
+     * singleton iterator stands in for: nothing can change it between the size check
+     * and the iteration, so the borrowed iterator sees exactly what vanilla's would.
+     */
+    public static boolean isImmutableSingleton(List<?> cubes) {
+        return cubes.size() == 1
+                && (cubes.getClass() == BAKED_SINGLETON_LIST || cubes instanceof ImmutableList<?>);
+    }
+
+    private static final class SingletonCuboidIterator implements Iterator<ModelPart.Cube> {
+        private ModelPart.Cube cuboid;
+
+        boolean tryReset(ModelPart.Cube cuboid) {
             if (this.cuboid != null) return false;
             this.cuboid = cuboid;
             return true;
@@ -1390,8 +1415,8 @@ public class RemixCapturingConsumer implements VertexConsumer {
         }
 
         @Override
-        public ModelPart.Cuboid next() {
-            ModelPart.Cuboid next = cuboid;
+        public ModelPart.Cube next() {
+            ModelPart.Cube next = cuboid;
             if (next == null) throw new NoSuchElementException();
             cuboid = null;
             return next;

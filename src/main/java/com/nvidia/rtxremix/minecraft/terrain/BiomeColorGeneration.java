@@ -5,8 +5,8 @@
 package com.nvidia.rtxremix.minecraft.terrain;
 
 /**
- * Generation of the grass and foliage colormaps. A biome's constant grass and foliage
- * colours depend on those maps, and a resource reload can replace the maps while the same
+ * Generation of the foliage and dry foliage colormaps. A biome's constant foliage colours
+ * depend on those maps, and a resource reload can replace the maps while the same
  * {@code Biome} instances stay loaded, so a colour cached on the biome is valid only for the
  * generation it was computed under. Bumped from the render thread when either map is set;
  * read on the section-build workers, so the field is volatile and a write before the bump

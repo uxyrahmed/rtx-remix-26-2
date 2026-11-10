@@ -4,22 +4,27 @@
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
-import net.minecraft.client.texture.Sprite;
-import net.minecraft.client.texture.SpriteAtlasTexture;
-import net.minecraft.util.Identifier;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
 import java.util.Map;
+import net.minecraft.client.renderer.texture.TextureAtlas;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.resources.Identifier;
 
-@Mixin(SpriteAtlasTexture.class)
+/**
+ * Sprite table and size of a stitched atlas. The size accessors are not named
+ * {@code getWidth}/{@code getHeight}: the atlas declares package-private methods
+ * with exactly those signatures.
+ */
+@Mixin(TextureAtlas.class)
 public interface SpriteAtlasAccessor {
-    @Accessor("sprites")
-    Map<Identifier, Sprite> getSprites();
+    @Accessor("texturesByName")
+    Map<Identifier, TextureAtlasSprite> getSprites();
 
     @Accessor("width")
-    int getWidth();
+    int getAtlasWidth();
 
     @Accessor("height")
-    int getHeight();
+    int getAtlasHeight();
 }

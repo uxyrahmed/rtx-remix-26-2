@@ -5,10 +5,8 @@
 package com.nvidia.rtxremix.minecraft.terrain.capture;
 
 import com.nvidia.rtxremix.minecraft.light.LightEntry;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.math.ChunkSectionPos;
-
 import java.util.List;
+import net.minecraft.core.SectionPos;
 
 /**
  * Captured block-level mesh data for a single chunk section (16x16x16),
@@ -18,7 +16,7 @@ import java.util.List;
  * layout via {@link SectionMeshData}. No intermediate SoA copies.
  */
 public record SectionBlockData(
-    ChunkSectionPos sectionPos,
+    SectionPos sectionPos,
     SectionMeshData meshData,
     List<LightEntry> lights,
     /**
@@ -47,38 +45,4 @@ public record SectionBlockData(
      */
     long[] opacityBitmap
 ) {
-    /**
-     * A captured quad; its block tint is carried as {@code colorIndex} and
-     * applied when the quad is staged.
-     *
-     * @param positions   12 floats: 4 vertices x (x, y, z), section-local coords [0..16]
-     * @param uvs         8 floats: 4 vertices x (u, v), atlas coordinates
-     * @param nx          face normal X
-     * @param ny          face normal Y
-     * @param nz          face normal Z
-     * @param color       ARGB vertex color as the model emitted it, before the block tint
-     * @param colorIndex  {@code BlockColors} tint index to multiply into {@code color}, or -1
-     *                    for none, including when the quad's material disables it
-     * @param spriteId    exact sprite identifier for O(1) material lookup
-     * @param spriteU0    sprite atlas UV bounds min U
-     * @param spriteV0    sprite atlas UV bounds min V
-     * @param spriteU1    sprite atlas UV bounds max U
-     * @param spriteV1    sprite atlas UV bounds max V
-     * @param renderLayer render layer name ("solid", "cutout", "cutout_mipped", "translucent")
-     * @param isOverlay   true if this quad is a decal overlay (transparent sprite on shared face)
-     * @param isFluid     true if this quad belongs to a fluid (water, lava)
-     */
-    public record BlockQuad(
-        float[] positions,
-        float[] uvs,
-        float nx, float ny, float nz,
-        int color,
-        int colorIndex,
-        Identifier spriteId,
-        float spriteU0, float spriteV0,
-        float spriteU1, float spriteV1,
-        String renderLayer,
-        boolean isOverlay,
-        boolean isFluid
-    ) {}
 }

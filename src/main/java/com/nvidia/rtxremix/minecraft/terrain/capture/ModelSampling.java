@@ -5,45 +5,51 @@
 package com.nvidia.rtxremix.minecraft.terrain.capture;
 
 import com.nvidia.rtxremix.minecraft.light.BlockLightRuleManager;
-import net.minecraft.block.BlockState;
-import net.minecraft.client.render.block.BlockRenderManager;
-import net.minecraft.client.render.model.BakedModel;
-import net.minecraft.client.render.model.BakedQuad;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.random.LocalRandom;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadView;
+import net.minecraft.client.renderer.block.BlockAndTintGetter;
+import net.minecraft.client.renderer.block.BlockStateModelSet;
+import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.SingleThreadedRandomSource;
+import org.jspecify.annotations.Nullable;
+
+import java.util.function.Predicate;
 
 /**
- * Samples the baked model of the block currently being meshed, so a block light
- * rule can be positioned against the geometry that actually rendered.
+ * Samples the model of the block currently being meshed, so a block light rule can be
+ * positioned against the geometry that actually rendered.
  *
- * <p>Rules see only a {@link BlockState} and a {@link net.minecraft.util.math.BlockPos},
- * which is enough for a block whose model is fixed. It is not enough for one
- * whose blockstate picks among rotated variants: the rotation lives in the
- * blockstate JSON, not in a property, so no offset table written against the
- * unrotated model can follow it. Only the mesh emitter knows which variant a
+ * <p>Rules see only a {@link BlockState} and a {@link BlockPos}, which is enough for a block
+ * whose model is fixed. It is not enough for one whose blockstate picks among rotated variants:
+ * the rotation lives in the blockstate JSON, not in a property, so no offset table written
+ * against the unrotated model can follow it. Only the mesh emitter knows which variant a
  * position drew, so it hands that knowledge over through this.
  *
- * <p>One instance per {@link BlockQuadEmitter}, therefore per worker thread.
- * {@link #begin} resets it for the next block; everything is computed lazily and
- * memoised, so a block whose rules never ask pays only the reset.
+ * <p>The model is read through the same {@code emitQuads} path the capture reads it through
+ * ({@link RemixRenderContext}), with the same seed and without face culling, so a sampled
+ * variant is the drawn variant and every face of it counts.
+ *
+ * <p>One instance per {@link BlockQuadEmitter}, therefore per worker thread. {@link #begin}
+ * resets it for the next block; everything is computed lazily and memoised, so a block whose
+ * rules never ask pays only the reset.
  */
 public final class ModelSampling implements BlockLightRuleManager.ModelSampler {
 
-    /** Matches the emission loop, so a sampled variant is the drawn variant. */
-    private static final Direction[] DIRECTIONS = {
-        null, Direction.UP, Direction.DOWN, Direction.NORTH,
-        Direction.SOUTH, Direction.EAST, Direction.WEST
-    };
+    private static final Predicate<@Nullable Direction> NO_CULL = face -> false;
 
     /** Own random, so sampling cannot perturb the emitter's model randomisation. */
-    private final LocalRandom random = new LocalRandom(0L);
+    private final SingleThreadedRandomSource random = new SingleThreadedRandomSource(0L);
+    private final BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 
-    private BlockRenderManager blockRenderManager;
+    /** Created on the first sample, so a thread whose blocks carry no light rule never makes one. */
+    private RemixRenderContext context;
+
+    private BlockStateModelSet blockModels;
+    private BlockAndTintGetter level;
     private BlockState state;
     private long seed;
-
-    private BakedModel model;
-    private boolean modelResolved;
 
     private float[] vertices = new float[3 * 256];
     private int vertexCount;
@@ -53,15 +59,23 @@ public final class ModelSampling implements BlockLightRuleManager.ModelSampler {
     private boolean centroidComputed;
 
     /** Rebinds this sampler to a new block and drops everything memoised. */
-    public void begin(BlockRenderManager blockRenderManager, BlockState state, long seed) {
-        this.blockRenderManager = blockRenderManager;
+    public void begin(BlockStateModelSet blockModels, BlockAndTintGetter level, BlockPos pos,
+                      BlockState state, long seed) {
+        this.blockModels = blockModels;
+        this.level = level;
+        this.pos.set(pos);
         this.state = state;
         this.seed = seed;
-        this.model = null;
-        this.modelResolved = false;
         this.vertexCount = 0;
         this.verticesCollected = false;
         this.centroidComputed = false;
+    }
+
+    /** Drops the references to the last block's region and models once a section is done. */
+    public void clear() {
+        this.blockModels = null;
+        this.level = null;
+        this.state = null;
     }
 
     @Override
@@ -93,30 +107,27 @@ public final class ModelSampling implements BlockLightRuleManager.ModelSampler {
         if (verticesCollected) return;
         verticesCollected = true;
 
-        if (!modelResolved) {
-            modelResolved = true;
-            model = (blockRenderManager != null && state != null)
-                    ? blockRenderManager.getModel(state)
-                    : null;
-        }
+        if (blockModels == null || state == null || level == null) return;
+        BlockStateModel model = blockModels.get(state);
         if (model == null) return;
 
-        for (Direction dir : DIRECTIONS) {
-            // Re-seed per direction exactly as the emission loop does, so a
-            // multi-variant model resolves to the same variant here as on screen.
-            random.setSeed(seed);
-            for (BakedQuad quad : model.getQuads(state, dir, random)) {
-                int[] vd = quad.getVertexData();
-                ensureCapacity(vertexCount + 4);
-                for (int v = 0; v < 4; v++) {
-                    int off = v * 8;
-                    int w = vertexCount * 3;
-                    vertices[w] = Float.intBitsToFloat(vd[off]);
-                    vertices[w + 1] = Float.intBitsToFloat(vd[off + 1]);
-                    vertices[w + 2] = Float.intBitsToFloat(vd[off + 2]);
-                    vertexCount++;
-                }
-            }
+        if (context == null) {
+            context = new RemixRenderContext(this::collectQuad);
+        }
+        // Seeded exactly as the emission seeds it, so a multi-variant model resolves to the
+        // same variant here as on screen.
+        random.setSeed(seed);
+        context.emitBlock(model, level, pos, state, random, NO_CULL);
+    }
+
+    private void collectQuad(QuadView quad) {
+        ensureCapacity(vertexCount + 4);
+        for (int v = 0; v < 4; v++) {
+            int w = vertexCount * 3;
+            vertices[w] = quad.x(v);
+            vertices[w + 1] = quad.y(v);
+            vertices[w + 2] = quad.z(v);
+            vertexCount++;
         }
     }
 

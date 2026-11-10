@@ -775,7 +775,7 @@ def test_upgrade_keeps_unicode_and_changes_only_the_memory_keys(sync: Sync, newl
     original = saved_by_prism(
         RECOMMENDED_FOR_PRISM,
         name="RTX Remix für Zoë – 光",
-        java="JavaPath=D:/Spiele/Zoë/RtxRemixMinecraft/jdk-21/bin/javaw.exe\r\nOverrideJavaLocation=true\r\n",
+        java="JavaPath=D:/Spiele/Zoë/RtxRemixMinecraft/jdk-25/bin/javaw.exe\r\nOverrideJavaLocation=true\r\n",
     ).replace("\r\n", newline)
 
     text, _ = sync(original, unattended=True)
@@ -787,7 +787,7 @@ def test_upgrade_keeps_unicode_and_changes_only_the_memory_keys(sync: Sync, newl
 
 
 def test_arm64_java_pin_keeps_unicode(sync: Sync, tmp_path: Path):
-    managed_jdk = tmp_path / "Zoë" / "jdk-21"
+    managed_jdk = tmp_path / "Zoë" / "jdk-25"
     javaw = managed_jdk / "bin" / "javaw.exe"
     javaw.parent.mkdir(parents=True)
     javaw.touch()

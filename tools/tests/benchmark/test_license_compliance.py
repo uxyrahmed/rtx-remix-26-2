@@ -207,18 +207,22 @@ class AccessWidenerHeaderTests(unittest.TestCase):
     """
 
     PATH = Path("src/main/resources/rtx-remix-renderer.accesswidener")
+    # Since Minecraft 26.1 the file is a class tweaker, the access widener's successor, which Loom still
+    # configures through accessWidenerPath. Either header is a format header.
+    FORMAT_HEADERS = ("classTweaker ", "accessWidener ")
 
     def test_format_header_is_still_the_first_line(self):
         lines = read_text(REPO_ROOT / self.PATH).splitlines()
         self.assertTrue(
-            lines[0].startswith("accessWidener "),
-            "the accessWidener format header must remain line 1; Loom rejects anything above it",
+            lines[0].startswith(self.FORMAT_HEADERS),
+            "the class tweaker format header must remain line 1; Loom rejects anything above it",
         )
 
     def test_spdx_header_is_present_below_the_format_header(self):
         text = read_text(REPO_ROOT / self.PATH)
         self.assertIn(SPDX_LICENSE_LINE, text)
-        self.assertLess(text.index("accessWidener "), text.index("SPDX-License-Identifier"))
+        header = next(prefix for prefix in self.FORMAT_HEADERS if text.startswith(prefix))
+        self.assertLess(text.index(header), text.index("SPDX-License-Identifier"))
 
 
 class ContributionDocumentTests(unittest.TestCase):

@@ -4,51 +4,84 @@
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.nvidia.rtxremix.minecraft.terrain.capture.RenderRegionStoragePool;
 import com.nvidia.rtxremix.minecraft.terrain.capture.RegionSnapshotRelease;
-import net.minecraft.block.BlockState;
-import net.minecraft.util.collection.PackedIntegerArray;
-import net.minecraft.world.chunk.PalettedContainer;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Mutable;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import net.minecraft.client.renderer.chunk.SectionCopy;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.PalettedContainer;
 
 /**
- * A chunk snapshot for a render region whose block-state copies draw their storage from
- * {@link RenderRegionStoragePool} and give it back when the last region holding the snapshot
- * has been consumed. Snapshots are shared between the regions one frame's rebuild scheduling
- * builds, hence the count. The pool flag is set around the constructor by
- * {@link ClientChunkMixin}; vanilla's own snapshot code is untouched.
+ * A section snapshot for render regions whose block-state copy draws its storage from
+ * {@link RenderRegionStoragePool} and gives it back when the last holder lets go. The render
+ * region cache that creates the snapshot holds the first reference (released by
+ * {@link ChunkRendererRegionBuilderMixin}), and each region built from the cache holds one
+ * more until its compile task has run ({@link ChunkRendererRegionMixin},
+ * {@link RebuildTaskMixin}); one frame's regions share snapshots, hence the count.
+ *
+ * <p>The cache is the only creator of section copies, so taking the copy here takes exactly
+ * the render snapshot copies from the pool. Vanilla's own copy code is untouched.
  */
-@Mixin(targets = "net.minecraft.client.render.chunk.RenderedChunk")
+@Mixin(SectionCopy.class)
 public abstract class RenderedChunkMixin implements RegionSnapshotRelease {
 
     @Shadow
     @Final
-    private List<PalettedContainer<BlockState>> blockStateContainers;
+    @Mutable
+    private PalettedContainer<BlockState> section;
 
-    private final AtomicInteger rtxremix$regions = new AtomicInteger();
+    /** The pooled storage behind {@link #section}, owned by this snapshot until its last release. */
+    private long[] rtxremix$pooledStorage;
+
+    private final AtomicInteger rtxremix$holders = new AtomicInteger();
+
+    @WrapOperation(
+            method = "<init>",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/chunk/PalettedContainer;copy()Lnet/minecraft/world/level/chunk/PalettedContainer;"))
+    private PalettedContainer<BlockState> rtxremix$copyIntoPooledStorage(
+            PalettedContainer<BlockState> states, Operation<PalettedContainer<BlockState>> original) {
+        RenderRegionStoragePool.beginCopying();
+        try {
+            return original.call(states);
+        } finally {
+            rtxremix$pooledStorage = RenderRegionStoragePool.endCopying();
+        }
+    }
+
+    /** The creating cache's reference. */
+    @Inject(method = "<init>", at = @At("RETURN"))
+    private void rtxremix$retainForCache(LevelChunk levelChunk, int sectionIndex, CallbackInfo ci) {
+        rtxremix$holders.incrementAndGet();
+    }
 
     @Override
     public void rtxremix$retain() {
-        rtxremix$regions.incrementAndGet();
+        rtxremix$holders.incrementAndGet();
     }
 
     @Override
     public void rtxremix$release() {
-        if (rtxremix$regions.decrementAndGet() != 0 || blockStateContainers == null) {
+        if (rtxremix$holders.decrementAndGet() != 0) {
             return;
         }
-        for (PalettedContainer<BlockState> container : blockStateContainers) {
-            if (container != null && container.data.storage() instanceof PackedIntegerArray packed) {
-                RenderRegionStoragePool.release(packed.getData());
-            }
+        long[] storage = rtxremix$pooledStorage;
+        rtxremix$pooledStorage = null;
+        // Nothing may read the snapshot after its last release. Dropping the container makes a
+        // stale read see air, never whatever the recycled array holds next.
+        section = null;
+        if (storage != null) {
+            RenderRegionStoragePool.release(storage);
         }
-        // Nothing may read the snapshot after its last release; make a stale read fail loudly
-        // instead of returning whatever the recycled arrays hold next.
-        blockStateContainers.clear();
     }
 }

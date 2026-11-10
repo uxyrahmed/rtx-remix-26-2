@@ -13,6 +13,7 @@ import com.nvidia.rtxremix.minecraft.asset.RemixMaterialStore;
 import com.nvidia.rtxremix.minecraft.asset.RemixMaterial;
 import com.nvidia.rtxremix.minecraft.RemixRenderer;
 import java.nio.ByteBuffer;
+import com.mojang.blaze3d.platform.NativeImage;
 import com.nvidia.rtxremix.HardcodedVertex;
 import com.nvidia.rtxremix.InstanceCategoryBit;
 import com.nvidia.rtxremix.MaterialInfo;
@@ -20,13 +21,6 @@ import com.nvidia.rtxremix.MaterialInfoOpaqueEXT;
 import com.nvidia.rtxremix.MaterialInfoOpaqueSubsurfaceEXT;
 import com.nvidia.rtxremix.RemixAPI;
 import com.nvidia.rtxremix.Transform;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.option.CloudRenderMode;
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.client.world.ClientWorld;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.math.Vec3d;
-
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -36,11 +30,24 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import net.minecraft.client.CloudStatus;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.resources.Identifier;
+import net.minecraft.util.ARGB;
+import net.minecraft.world.attribute.EnvironmentAttributeProbe;
+import net.minecraft.world.attribute.EnvironmentAttributes;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Renders either deterministic Perlin-Worley clouds or the voxelized vanilla
  * cloud texture, as one Remix material shared by all clouds and one submitted
  * transform per visible cloud or texture chunk each frame.
+ *
+ * <p>Clouds follow the same switches as vanilla's: none while the cloud option is
+ * off or the dimension's cloud colour attribute is fully transparent, at the cloud
+ * height attribute, tinted by the cloud colour attribute. The height attribute
+ * already includes vanilla's small lift above the nominal layer height.
  *
  * <p>Ownership: only the render thread creates or destroys Remix assets here.
  * Mesh generation runs on worker tasks that return plain vertex data, and every
@@ -50,15 +57,13 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  */
 public final class CloudRenderer {
     private static final Identifier VANILLA_CLOUD_TEXTURE =
-            Identifier.ofVanilla("textures/environment/clouds.png");
+            Identifier.withDefaultNamespace("textures/environment/clouds.png");
     static final int PALETTE_SIZE = 32;
     static final long PALETTE_SEED = 0x434C_4F55_4450_5546L;
     private static final long MAINTENANCE_INTERVAL_TICKS = 40L;
     private static final double CURVATURE_RADIUS = 8000.0;
     private static final float DEFAULT_VANILLA_EDGE_SMOOTHNESS = 1.5f;
     private static final float VANILLA_BASE_THICKNESS = 4.0f;
-    /** Vanilla's small offset above the nominal cloud height, which avoids z-fighting with block tops. */
-    private static final float VANILLA_LAYER_LIFT = 0.33f;
     private static final float DEFAULT_CLOUD_SIZE = 1.0f;
     private static final float DEFAULT_CLOUDS_HEIGHT = 0.0f;
     private static final int INSTANCE_CATEGORIES = InstanceCategoryBit.IGNORE_BAKED_LIGHTING;
@@ -81,7 +86,7 @@ public final class CloudRenderer {
             new ConcurrentLinkedQueue<>();
     private final Transform vanillaTransform = new Transform();
 
-    private ClientWorld currentWorld;
+    private ClientLevel currentWorld;
     private RemixMaterial material;
     private int cloudColor = 0x00ff_ffff;
     private int materialColor = -1;
@@ -119,36 +124,37 @@ public final class CloudRenderer {
         this.meshCreator = meshCreator;
     }
 
-    public void render(ClientWorld world, Vec3d cameraPos, float tickDelta) {
+    public void render(ClientLevel world, Vec3 cameraPos, float tickDelta) {
         resetFrameStats();
         if (world != currentWorld) {
             clearScene();
             currentWorld = world;
         }
 
-        MinecraftClient client = MinecraftClient.getInstance();
-        float cloudHeight = world.getDimensionEffects().getCloudsHeight();
-        if (client.options.getCloudRenderModeValue() == CloudRenderMode.OFF
-                || Float.isNaN(cloudHeight)) {
+        Minecraft client = Minecraft.getInstance();
+        EnvironmentAttributeProbe attributes = client.gameRenderer.mainCamera().attributeProbe();
+        int vanillaCloudColor = attributes.getValue(EnvironmentAttributes.CLOUD_COLOR, tickDelta);
+        if (client.options.getCloudStatus() == CloudStatus.OFF
+                || ARGB.alpha(vanillaCloudColor) == 0) {
             releaseResources();
             return;
         }
         if (!shouldSuppressVanillaClouds()) {
             return;
         }
-        updateCloudColor(world.getCloudsColor(tickDelta));
+        float cloudHeight = attributes.getValue(EnvironmentAttributes.CLOUD_HEIGHT, tickDelta);
+        updateCloudColor(vanillaCloudColor);
 
         if (!proceduralClouds) {
             completedPaletteMeshes.clear();
             clouds.clear();
             visibleKeys.clear();
-            int cloudTicks =
-                    ((WorldRendererCloudAccess) client.worldRenderer).rtxremix$getCloudTicks();
-            drawVanillaClouds(cameraPos, cloudHeight, cloudTicks + (double) tickDelta);
+            drawVanillaClouds(cameraPos, cloudHeight,
+                    VanillaCloudPlacement.driftTicks(world.getGameTime(), tickDelta));
             return;
         }
 
-        double worldTime = world.getTime() + (double) tickDelta;
+        double worldTime = world.getGameTime() + (double) tickDelta;
         if (!ensurePalette()) {
             return;
         }
@@ -189,7 +195,7 @@ public final class CloudRenderer {
                 >= CloudPlacement.CELL_SIZE * CloudPlacement.CELL_SIZE;
     }
 
-    private void updateVisibleClouds(Vec3d cameraPos, double worldTime) {
+    private void updateVisibleClouds(Vec3 cameraPos, double worldTime) {
         visibleKeys.clear();
         try (ProfileScope ignored = ProfileScope.begin("Cloud.Visibility")) {
             CloudPlacement.forEachVisible(
@@ -379,12 +385,12 @@ public final class CloudRenderer {
         if (vanillaOccupancy != null) {
             return;
         }
-        MinecraftClient client = MinecraftClient.getInstance();
+        Minecraft client = Minecraft.getInstance();
         try {
             var resource = client.getResourceManager().getResource(VANILLA_CLOUD_TEXTURE)
                     .orElseThrow(() -> new IOException(
                             "Missing texture " + VANILLA_CLOUD_TEXTURE));
-            try (NativeImage image = NativeImage.read(resource.getInputStream())) {
+            try (NativeImage image = NativeImage.read(resource.open())) {
                 vanillaTextureWidth = image.getWidth();
                 vanillaTextureHeight = image.getHeight();
                 vanillaOccupancy =
@@ -392,7 +398,7 @@ public final class CloudRenderer {
                 for (int y = 0; y < vanillaTextureHeight; y++) {
                     for (int x = 0; x < vanillaTextureWidth; x++) {
                         vanillaOccupancy[y * vanillaTextureWidth + x] =
-                                ((image.getColor(x, y) >>> 24) & 0xff) >= 128;
+                                ((image.getPixel(x, y) >>> 24) & 0xff) >= 128;
                     }
                 }
             }
@@ -516,8 +522,12 @@ public final class CloudRenderer {
         materialColor = cloudColor;
     }
 
-    private void updateCloudColor(Vec3d color) {
-        int packedColor = packCloudColor(color.x, color.y, color.z);
+    /** Tints the material with the RGB of vanilla's ARGB cloud colour; its alpha only gates clouds. */
+    private void updateCloudColor(int vanillaArgb) {
+        int packedColor = packCloudColor(
+                ARGB.red(vanillaArgb) / 255.0,
+                ARGB.green(vanillaArgb) / 255.0,
+                ARGB.blue(vanillaArgb) / 255.0);
         cloudColor = packedColor;
         if (material == null || material.isDeleted() || materialColor == packedColor) {
             return;
@@ -575,7 +585,7 @@ public final class CloudRenderer {
         return (int) Math.round(adjustedColor * 255.0);
     }
 
-    private void drawVanillaClouds(Vec3d cameraPos, float cloudHeight, double worldTime) {
+    private void drawVanillaClouds(Vec3 cameraPos, float cloudHeight, double worldTime) {
         ensureVanillaCloudMask();
 
         publishVanillaChunks();
@@ -603,7 +613,7 @@ public final class CloudRenderer {
                     matrix[4] = 0.0f;
                     matrix[5] = 1.0f;
                     matrix[6] = 0.0f;
-                    matrix[7] = cloudHeight + cloudsHeight + VANILLA_LAYER_LIFT;
+                    matrix[7] = cloudHeight + cloudsHeight;
                     matrix[8] = 0.0f;
                     matrix[9] = 0.0f;
                     matrix[10] = 1.0f;
@@ -622,7 +632,7 @@ public final class CloudRenderer {
         lastCloudCount = lastInstanceCount;
     }
 
-    private void drawClouds(Vec3d cameraPos, float cloudHeight, double worldTime) {
+    private void drawClouds(Vec3 cameraPos, float cloudHeight, double worldTime) {
         double elapsedTicks = worldTime - placementWorldTime;
         double windX = elapsedTicks * CloudPlacement.WIND_X_PER_TICK;
         double windZ = elapsedTicks * CloudPlacement.WIND_Z_PER_TICK;
@@ -645,7 +655,7 @@ public final class CloudRenderer {
 
     private void updateTransform(
             ActiveCloud cloud,
-            Vec3d cameraPos,
+            Vec3 cameraPos,
             float cloudHeight,
             double windX,
             double windZ) {
@@ -662,7 +672,6 @@ public final class CloudRenderer {
                 - Math.sqrt(CURVATURE_RADIUS * CURVATURE_RADIUS - clampedDistanceSquared);
         float worldY = cloudHeight
                 + cloudsHeight
-                + VANILLA_LAYER_LIFT
                 + placement.altitudeOffset()
                 - (float) curvatureDrop;
         float scale = placement.scale() * cloudSize;

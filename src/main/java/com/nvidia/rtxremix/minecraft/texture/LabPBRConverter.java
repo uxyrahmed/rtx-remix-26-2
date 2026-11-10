@@ -4,16 +4,15 @@
  */
 package com.nvidia.rtxremix.minecraft.texture;
 
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.resource.Resource;
-import net.minecraft.resource.ResourceManager;
-import net.minecraft.util.Identifier;
-
+import com.mojang.blaze3d.platform.NativeImage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Map;
+import net.minecraft.resources.Identifier;
+import net.minecraft.server.packs.resources.Resource;
+import net.minecraft.server.packs.resources.ResourceManager;
 
 /**
  * Converts LabPBR _n/_s textures into Remix-compatible PBR channel data.
@@ -30,10 +29,12 @@ public final class LabPBRConverter {
 
     // --- Per-pixel conversions (int 0-255 domain) ---
 
-    private static int smoothnessToRoughness(int s) {
-        double lin = 1.0 - s / 255.0;
-        return clamp255((int) (lin * lin * 255.0));
-    }
+    /**
+     * LabPBR stores perceptual smoothness and Remix takes perceptual roughness, so the two
+     * are complements. Remix squares its input into GGX alpha itself, which is the spec's
+     * linear roughness {@code (1 - smoothness)^2}; squaring here as well would square twice.
+     */
+    private static int smoothnessToPerceptualRoughness(int s) { return 255 - s; }
 
     private static int f0ToMetallic(int g) { return g >= 230 ? 255 : 0; }
 
@@ -43,12 +44,13 @@ public final class LabPBRConverter {
 
     /**
      * Builds an RGBA8 normal atlas from _n images blitted into the given region.
-     * Reconstructs Z from X,Y per the LabPBR spec.
+     * Reconstructs Z from X,Y per the LabPBR spec and stores it in the same encoding as X and
+     * Y, because Remix reads a three-channel tangent-space normal as {@code rgb * 2 - 1}.
      */
     public static void blitNormal(byte[] dst, int atlasW, NativeImage n, int ox, int oy, int w, int h) {
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
-                int abgr = n.getColor(x % n.getWidth(), y % n.getHeight());
+                int abgr = NativeImagePixels.abgr(n, x % n.getWidth(), y % n.getHeight());
                 int nr = abgr & 0xFF;
                 int ng = (abgr >> 8) & 0xFF;
                 double nx = (nr / 255.0) * 2.0 - 1.0;
@@ -57,7 +59,7 @@ public final class LabPBRConverter {
                 int idx = ((oy + y) * atlasW + (ox + x)) * 4;
                 dst[idx]     = (byte) nr;
                 dst[idx + 1] = (byte) ng;
-                dst[idx + 2] = (byte) clamp255((int) (nz * 255.0));
+                dst[idx + 2] = (byte) Math.round((nz + 1.0) * 127.5);
                 dst[idx + 3] = (byte) 255;
             }
         }
@@ -67,7 +69,7 @@ public final class LabPBRConverter {
     public static void applyAO(byte[] albedoRGBA, int atlasW, NativeImage n, int ox, int oy, int w, int h) {
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++) {
-                int abgr = n.getColor(x % n.getWidth(), y % n.getHeight());
+                int abgr = NativeImagePixels.abgr(n, x % n.getWidth(), y % n.getHeight());
                 int ao = (abgr >> 16) & 0xFF;
                 int idx = ((oy + y) * atlasW + (ox + x)) * 4;
                 albedoRGBA[idx]     = (byte) ((albedoRGBA[idx]     & 0xFF) * ao / 255);
@@ -81,12 +83,58 @@ public final class LabPBRConverter {
         blitR8(dst, atlasW, n, ox, oy, w, h, 24); // alpha shift
     }
 
-    /** Blits roughness R8 from _s red channel (perceptual smoothness -> linear roughness). */
+    /** Longest side an atlas height map may grow to through {@link #heightMapRepeat}. */
+    static final int MAX_HEIGHT_MAP_SIDE = 16384;
+
+    /**
+     * Returns how many times to repeat each texel of an atlas height map, in each direction,
+     * before Remix's quadtree POM reads it. The quadtree starts its search halfway down the
+     * map's mip chain, on cells {@code 2^(floor(log2(side)) / 2)} texels wide, while the march
+     * wraps at the sprite's UV bounds, so a starting cell wider than a sprite takes in its
+     * neighbours and shears the relief. The 2048-texel block atlas of a 16x pack starts on
+     * 32-texel cells over 16-texel sprites; four repeats make both 64. Packs of 64x and
+     * above need none.
+     *
+     * @param atlasSide      the atlas's longer side, in texels
+     * @param smallestSprite the shorter side of the smallest sprite that has height, in texels
+     * @return the smallest power of two that fits, or 1 when none fits within
+     *         {@link #MAX_HEIGHT_MAP_SIDE}
+     */
+    public static int heightMapRepeat(int atlasSide, int smallestSprite) {
+        for (int repeat = 1; (long) atlasSide * repeat <= MAX_HEIGHT_MAP_SIDE; repeat *= 2) {
+            if (quadtreeStartCell(atlasSide * repeat) <= (long) smallestSprite * repeat) return repeat;
+        }
+        return 1;
+    }
+
+    private static int quadtreeStartCell(int side) {
+        int log2 = 31 - Integer.numberOfLeadingZeros(side);
+        return 1 << (log2 / 2);
+    }
+
+    /** Repeats every texel of an R8 map {@code repeat} times in each direction. */
+    public static byte[] repeatTexels(byte[] r8, int w, int h, int repeat) {
+        if (repeat == 1) return r8;
+        int outW = w * repeat;
+        byte[] out = new byte[outW * h * repeat];
+        for (int y = 0; y < h; y++) {
+            int firstRow = y * repeat * outW;
+            for (int x = 0; x < w; x++) {
+                Arrays.fill(out, firstRow + x * repeat, firstRow + (x + 1) * repeat, r8[y * w + x]);
+            }
+            for (int copy = 1; copy < repeat; copy++) {
+                System.arraycopy(out, firstRow, out, firstRow + copy * outW, outW);
+            }
+        }
+        return out;
+    }
+
+    /** Blits perceptual roughness R8 from the perceptual smoothness in _s red. */
     public static void blitRoughness(byte[] dst, int atlasW, NativeImage s, int ox, int oy, int w, int h) {
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++) {
-                int abgr = s.getColor(x % s.getWidth(), y % s.getHeight());
-                dst[(oy + y) * atlasW + (ox + x)] = (byte) smoothnessToRoughness(abgr & 0xFF);
+                int abgr = NativeImagePixels.abgr(s, x % s.getWidth(), y % s.getHeight());
+                dst[(oy + y) * atlasW + (ox + x)] = (byte) smoothnessToPerceptualRoughness(abgr & 0xFF);
             }
     }
 
@@ -94,7 +142,7 @@ public final class LabPBRConverter {
     public static void blitMetallic(byte[] dst, int atlasW, NativeImage s, int ox, int oy, int w, int h) {
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++) {
-                int abgr = s.getColor(x % s.getWidth(), y % s.getHeight());
+                int abgr = NativeImagePixels.abgr(s, x % s.getWidth(), y % s.getHeight());
                 dst[(oy + y) * atlasW + (ox + x)] = (byte) f0ToMetallic((abgr >> 8) & 0xFF);
             }
     }
@@ -107,7 +155,7 @@ public final class LabPBRConverter {
     public static void blitSSS(byte[] dst, int atlasW, NativeImage s, int ox, int oy, int w, int h) {
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++) {
-                int abgr = s.getColor(x % s.getWidth(), y % s.getHeight());
+                int abgr = NativeImagePixels.abgr(s, x % s.getWidth(), y % s.getHeight());
                 byte val = (byte) sssIntensity((abgr >> 16) & 0xFF);
                 int idx = ((oy + y) * atlasW + (ox + x)) * 4;
                 dst[idx] = val; dst[idx + 1] = val; dst[idx + 2] = val;
@@ -115,12 +163,30 @@ public final class LabPBRConverter {
             }
     }
 
+    /**
+     * Returns the share of a region's opaque texels that scatter: texels whose albedo alpha is
+     * above zero and whose intensity in an atlas written by {@link #blitSSS} is above zero.
+     * A region with no opaque texels scatters nowhere.
+     */
+    public static float scatteringCoverage(byte[] sssRGBA, byte[] albedoRGBA, int atlasW,
+                                           int ox, int oy, int w, int h) {
+        int opaque = 0, scattering = 0;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                int idx = ((oy + y) * atlasW + (ox + x)) * 4;
+                if ((albedoRGBA[idx + 3] & 0xFF) == 0) continue;
+                opaque++;
+                if ((sssRGBA[idx] & 0xFF) > 0) scattering++;
+            }
+        return opaque == 0 ? 0.0f : (float) scattering / opaque;
+    }
+
     /** Blits explicit SSS single-scattering albedo RGB from a {@code _sss} texture. */
     public static void blitSingleScatteringAlbedo(byte[] dst, int atlasW, NativeImage sss,
                                                   int ox, int oy, int w, int h) {
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++) {
-                int abgr = sss.getColor(x % sss.getWidth(), y % sss.getHeight());
+                int abgr = NativeImagePixels.abgr(sss, x % sss.getWidth(), y % sss.getHeight());
                 int idx = ((oy + y) * atlasW + (ox + x)) * 4;
                 dst[idx]     = (byte) (abgr & 0xFF);
                 dst[idx + 1] = (byte) ((abgr >> 8) & 0xFF);
@@ -162,7 +228,7 @@ public final class LabPBRConverter {
             for (int x = 0; x < w; x++) {
                 float factor;
                 if (s != null) {
-                    int alpha = (s.getColor(x % s.getWidth(), y % s.getHeight()) >> 24) & 0xFF;
+                    int alpha = (NativeImagePixels.abgr(s, x % s.getWidth(), y % s.getHeight()) >> 24) & 0xFF;
                     factor = (alpha < 255) ? Math.min(1.0f, alpha / 254.0f * gain) : fallbackFactor;
                 } else {
                     factor = fallbackFactor;
@@ -330,14 +396,14 @@ public final class LabPBRConverter {
     /**
      * Pre-computes a flat AO byte table from a LabPBR {@code _n} image.
      * AO is stored in the blue channel (byte index 2 of the ABGR layout
-     * returned by {@link NativeImage#getColor}, i.e. shift 16).
+     * returned by {@link NativeImagePixels#abgr}, i.e. shift 16).
      */
     public static byte[] buildAOTable(NativeImage n) {
         int w = n.getWidth(), h = n.getHeight();
         byte[] table = new byte[w * h];
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++)
-                table[y * w + x] = (byte) ((n.getColor(x, y) >> 16) & 0xFF);
+                table[y * w + x] = (byte) ((NativeImagePixels.abgr(n, x, y) >> 16) & 0xFF);
         return table;
     }
 
@@ -350,7 +416,7 @@ public final class LabPBRConverter {
         byte[] table = new byte[w * h];
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++)
-                table[y * w + x] = (byte) ((s.getColor(x, y) >> 24) & 0xFF);
+                table[y * w + x] = (byte) ((NativeImagePixels.abgr(s, x, y) >> 24) & 0xFF);
         return table;
     }
 
@@ -409,12 +475,34 @@ public final class LabPBRConverter {
         return sAlphaTable;
     }
 
+    /**
+     * Filters the colour of every texel in a region of RGBA8 emission through {@code tint},
+     * once the emission is built: by {@link #blitEmissive} or {@link #blitEmissiveMask} into
+     * the atlas, or by {@link #buildEmissivePatch} or {@link #buildEmissiveMaskPatch} into an
+     * animation patch. No channel comes out brighter than it went in. Alpha, which says
+     * whether a texel emits, is left alone, and a texel that emits nothing stays black.
+     *
+     * @param rgba      the emissive atlas or patch
+     * @param rowPixels width of {@code rgba} in texels
+     */
+    public static void applyEmissionTint(byte[] rgba, int rowPixels, int ox, int oy, int w, int h,
+                                         BuiltinEmission.Tint tint) {
+        if (BuiltinEmission.Tint.NONE.equals(tint)) return;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                int i = ((oy + y) * rowPixels + (ox + x)) * 4;
+                rgba[i]     = (byte) Math.round((rgba[i]     & 0xFF) * tint.r());
+                rgba[i + 1] = (byte) Math.round((rgba[i + 1] & 0xFF) * tint.g());
+                rgba[i + 2] = (byte) Math.round((rgba[i + 2] & 0xFF) * tint.b());
+            }
+    }
+
     public static byte[] buildSRoughnessTable(NativeImage s) {
         int w = s.getWidth(), h = s.getHeight();
         byte[] table = new byte[w * h];
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++)
-                table[y * w + x] = (byte) smoothnessToRoughness(s.getColor(x, y) & 0xFF);
+                table[y * w + x] = (byte) smoothnessToPerceptualRoughness(NativeImagePixels.abgr(s, x, y) & 0xFF);
         return table;
     }
 
@@ -423,7 +511,7 @@ public final class LabPBRConverter {
         byte[] table = new byte[w * h];
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++)
-                table[y * w + x] = (byte) f0ToMetallic((s.getColor(x, y) >> 8) & 0xFF);
+                table[y * w + x] = (byte) f0ToMetallic((NativeImagePixels.abgr(s, x, y) >> 8) & 0xFF);
         return table;
     }
 
@@ -432,7 +520,7 @@ public final class LabPBRConverter {
         byte[] table = new byte[w * h];
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++)
-                table[y * w + x] = (byte) sssIntensity((s.getColor(x, y) >> 16) & 0xFF);
+                table[y * w + x] = (byte) sssIntensity((NativeImagePixels.abgr(s, x, y) >> 16) & 0xFF);
         return table;
     }
 
@@ -517,7 +605,7 @@ public final class LabPBRConverter {
     }
 
     public static VariantCache buildVariantCache(ResourceManager rm) {
-        return new VariantCache(rm.findResources("textures", LabPBRConverter::isVariantResource));
+        return new VariantCache(rm.listResources("textures", LabPBRConverter::isVariantResource));
     }
 
     private static boolean isVariantResource(Identifier id) {
@@ -527,7 +615,7 @@ public final class LabPBRConverter {
 
     private static NativeImage loadResource(Resource resource) {
         if (resource == null) return null;
-        try (InputStream stream = resource.getInputStream()) {
+        try (InputStream stream = resource.open()) {
             return NativeImage.read(stream);
         } catch (IOException | RuntimeException e) {
             return null;
@@ -535,7 +623,7 @@ public final class LabPBRConverter {
     }
 
     private static Identifier variantId(Identifier spriteId, String suffix) {
-        return Identifier.of(spriteId.getNamespace(), "textures/" + spriteId.getPath() + suffix + ".png");
+        return Identifier.fromNamespaceAndPath(spriteId.getNamespace(), "textures/" + spriteId.getPath() + suffix + ".png");
     }
 
     /**
@@ -544,7 +632,7 @@ public final class LabPBRConverter {
     public static boolean hasSSSData(NativeImage s) {
         for (int y = 0; y < s.getHeight(); y++)
             for (int x = 0; x < s.getWidth(); x++)
-                if (((s.getColor(x, y) >> 16) & 0xFF) >= 65) return true;
+                if (((NativeImagePixels.abgr(s, x, y) >> 16) & 0xFF) >= 65) return true;
         return false;
     }
 
@@ -555,7 +643,7 @@ public final class LabPBRConverter {
     public static boolean hasEmissiveData(NativeImage s) {
         for (int y = 0; y < s.getHeight(); y++)
             for (int x = 0; x < s.getWidth(); x++)
-                if (((s.getColor(x, y) >> 24) & 0xFF) < 255) return true;
+                if (((NativeImagePixels.abgr(s, x, y) >> 24) & 0xFF) < 255) return true;
         return false;
     }
 
@@ -565,7 +653,7 @@ public final class LabPBRConverter {
                                int ox, int oy, int w, int h, int shift) {
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++) {
-                int abgr = img.getColor(x % img.getWidth(), y % img.getHeight());
+                int abgr = NativeImagePixels.abgr(img, x % img.getWidth(), y % img.getHeight());
                 dst[(oy + y) * atlasW + (ox + x)] = (byte) ((abgr >> shift) & 0xFF);
             }
     }

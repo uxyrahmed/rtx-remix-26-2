@@ -1,7 +1,7 @@
 {
   "key.rtxremix.toggleHeldLights": "Toggle Held Lights",
   "key.rtxremix.toggleRtx": "Toggle RTX Rendering",
-  "category.rtxremix": "RTX Remix",
+  "key.category.rtx-remix-renderer.main": "RTX Remix",
 
   "block.rtx-remix-renderer.copper_beacon": "Copper Beacon",
   "container.rtx-remix-renderer.copper_beacon": "Copper Beacon Controls",
@@ -51,6 +51,8 @@
   "rtxremix.settings.value.multiplier": "%s\u00d7",
   "rtxremix.settings.value.procedural": "Procedural",
   "rtxremix.settings.value.classic": "Classic",
+  "rtxremix.settings.value.natural": "Natural",
+  "rtxremix.settings.value.vivid": "Vivid",
   "rtxremix.settings.category.performance": "Performance",
   "rtxremix.settings.category.lighting": "Lighting",
   "rtxremix.settings.category.image": "Image & Exposure",
@@ -80,6 +82,8 @@
   "rtxremix.setting.light.reach.tip": "Blocks from the camera at which a torch stops casting light. Brighter lights reach further and dimmer ones less. Lower values shrink the light list the path tracer samples from.",
   "rtxremix.setting.framerate.unfocused": "Background Max Framerate",
   "rtxremix.setting.framerate.unfocused.tip": "Framerate cap while the game window is not focused. Lower values leave the GPU to other applications. Unlimited leaves only Minecraft's Max Framerate in force.",
+  "rtxremix.setting.sky.vividLook": "Look",
+  "rtxremix.setting.sky.vividLook.tip": "Natural keeps the physically based look. Vivid warms the sunlight into golden mornings and evenings, deepens the blue of the sky, makes nights dark and moonlit blue with twinkling stars and auroras, and adds haze with light shafts, glowing light in caves, soft bloom, and a gentle vignette.",
   "rtxremix.setting.sky.enabled": "Sky Rendering",
   "rtxremix.setting.sky.enabled.tip": "Toggle the Remix sky.",
   "rtxremix.setting.sky.ambient": "Sky Ambient Light",
@@ -107,6 +111,7 @@
 
   "rtxremix.setting.blockLights.candles": "Candles",
   "rtxremix.setting.blockLights.candleCakes": "Candle Cakes",
+  "rtxremix.setting.blockLights.copperLanterns": "Copper Lanterns",
   "rtxremix.setting.blockLights.multiplier.tip": "Multiplies this block light's normal brightness. Off disables it; 1.00\u00d7 keeps the intended brightness. Changes apply when you leave this screen and rebuild loaded terrain once.",
 
   "rtxremix.setting.materials.terrainEmission": "Block Glow Intensity",

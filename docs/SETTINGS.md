@@ -37,13 +37,25 @@ This page shapes the sky's light and appearance, clouds, and block lights.
 Clouds still follow Minecraft's own cloud option: Off removes them regardless
 of the selected style, while Fast and Fancy draw the same geometry here.
 
+**Look** chooses the art direction. Natural is the physically based look the
+mod ships with. Vivid warms the sunlight into golden mornings and evenings,
+deepens the blue of the sky, and makes nights dark and moonlit blue, with
+twinkling stars and auroras. It adds haze that turns sunlight into shafts
+through leaves and windows, thicker haze in caves and rooms so torches and
+lamps glow through the air, soft bloom that keeps light sources detailed, and a
+gentle vignette. It changes the light itself rather than tinting the picture,
+so torches keep their colour. Vivid is a set of lighting profiles that fade in
+over a few seconds; a map's own profiles, the weather, and the Image &
+Exposure page still win the options they set.
+
 **Block Lights** opens a table of multipliers for normal light brightness,
 grouping related block lights into a row; the far left is Off. The Copper
-Beacon is separate: right-click a placed beacon for its own controls. Lanterns
-and sea pickles glow through their surfaces rather than casting separate
-lights, so **Block Glow Intensity** under Materials controls them. Emitting
-surfaces are not sampled directly, so a room lit only by them can be darker
-than one with separate lights.
+Beacon is separate: right-click a placed beacon for its own controls.
+Lanterns, fire and nether portals have rows of their own. Glowing blocks such
+as glowstone and froglights, lava, sea pickles, glow lichen, glow berries, end
+rods and magma glow through their surfaces only, so **Block Glow Intensity**
+under Materials controls them. Emitting surfaces are not sampled directly, so a
+room lit only by them can be darker than one with separate lights.
 
 The table commits changed rows together when you leave and rebuilds the loaded
 terrain once, rather than rebuilding every block light at each drag position.
@@ -61,7 +73,9 @@ below.
 ## Materials
 
 **Block Glow Intensity** changes the light emitted by glowing block surfaces,
-rather than the separate sources in Block Lights. Applying it recreates shared
+rather than the separate sources in Block Lights. The default keeps glowing
+textures readable instead of clipping them to white; 5.00x restores the
+brighter glow of earlier versions. Applying it recreates shared
 terrain materials and rebuilds the loaded terrain, so edits wait until you
 leave the page.
 

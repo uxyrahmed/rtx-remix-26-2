@@ -4,18 +4,17 @@
  */
 package com.nvidia.rtxremix.minecraft.texture;
 
-import net.minecraft.client.texture.AbstractTexture;
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.client.texture.NativeImageBackedTexture;
-import net.minecraft.client.texture.TextureManager;
-import net.minecraft.resource.ResourceManager;
-import net.minecraft.util.Identifier;
 import org.junit.jupiter.api.Test;
 
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import net.minecraft.client.renderer.texture.AbstractTexture;
+import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.resources.Identifier;
+import sun.misc.Unsafe;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -24,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
+import com.mojang.blaze3d.platform.NativeImage;
 
 /**
  * Pins how glyph pages are served beside the snapshot cache and which snapshots survive
@@ -35,7 +36,7 @@ class DynamicTextureCacheTest {
 
     @Test
     void aGlyphPageIsReadLiveAndOutlivesClear() {
-        Identifier id = Identifier.of("minecraft", "default/0");
+        Identifier id = Identifier.fromNamespaceAndPath("minecraft", "default/0");
         GlyphPageMirror page = new GlyphPageMirror(false);
         DynamicTextureCache.onRegisterGlyphPage(id, page);
 
@@ -58,7 +59,7 @@ class DynamicTextureCacheTest {
 
     @Test
     void aPageReRegisteredUnderItsIdReplacesItsPredecessor() {
-        Identifier id = Identifier.of("minecraft", "default/1");
+        Identifier id = Identifier.fromNamespaceAndPath("minecraft", "default/1");
         GlyphPageMirror replaced = new GlyphPageMirror(false);
         GlyphPageMirror fresh = new GlyphPageMirror(true);
         DynamicTextureCache.onRegisterGlyphPage(id, replaced);
@@ -70,7 +71,7 @@ class DynamicTextureCacheTest {
 
     @Test
     void clearKeepsTheSnapshotAndRegistrationOfALiveTexture() {
-        Identifier id = Identifier.of("minecraft", "skins/live");
+        Identifier id = Identifier.fromNamespaceAndPath("minecraft", "skins/live");
         AbstractTexture texture = newTexture();
         DynamicTextureCache.onRegisterTexture(id, texture, null);
         try (NativeImage image = new NativeImage(1, 1, true)) {
@@ -91,56 +92,62 @@ class DynamicTextureCacheTest {
         }
     }
 
+    /**
+     * The texture stays strongly reachable, as the texture manager keeps a closed map
+     * texture registered, so only its closed image marks it released.
+     */
     @Test
-    void clearDropsAClosedImageTextureEvenWhileTheManagerKeepsItRegistered() {
-        Identifier id = Identifier.of("minecraft", "dynamic/closed-map");
-        TextureManager manager = new TextureManager(null);
-        NativeImageBackedTexture texture = new NativeImageBackedTexture(new NativeImage(1, 1, true));
-        manager.registerTexture(id, texture);
-        DynamicTextureCache.onRegisterTexture(id, texture, texture.getImage());
+    void clearDropsAClosedImageTextureEvenWhileItStaysRegistered() throws Exception {
+        Identifier id = Identifier.fromNamespaceAndPath("minecraft", "dynamic/closed-map");
+        DynamicTexture texture = newDynamicTexture(new NativeImage(1, 1, true));
+        DynamicTextureCache.onRegisterTexture(id, texture, texture.getPixels());
         assertNotNull(DynamicTextureCache.get(id));
 
         texture.close();
-        assertNull(texture.getImage());
-        assertSame(texture, manager.getTexture(id));
+        assertTrue(texture.getPixels().isClosed(), "closing frees the pixels and keeps the image object");
+        assertFalse(DynamicTextureCache.hasOpenImage(texture));
         DynamicTextureCache.clear();
 
         assertNull(DynamicTextureCache.get(id));
+        assertNotNull(texture);
     }
 
     @Test
-    void clearKeepsALiveImageTextureWhenAClosedTextureSharesItsId() {
-        Identifier id = Identifier.of("minecraft", "dynamic/replaced-map");
-        NativeImageBackedTexture closed = new NativeImageBackedTexture(new NativeImage(1, 1, true));
-        DynamicTextureCache.onRegisterTexture(id, closed, closed.getImage());
+    void clearKeepsALiveImageTextureWhenAClosedTextureSharesItsId() throws Exception {
+        Identifier id = Identifier.fromNamespaceAndPath("minecraft", "dynamic/replaced-map");
+        DynamicTexture closed = newDynamicTexture(new NativeImage(1, 1, true));
+        DynamicTextureCache.onRegisterTexture(id, closed, closed.getPixels());
         closed.close();
-        try (NativeImageBackedTexture live = new NativeImageBackedTexture(new NativeImage(1, 1, true))) {
-            DynamicTextureCache.onRegisterTexture(id, live, live.getImage());
+        DynamicTexture live = newDynamicTexture(new NativeImage(1, 1, true));
+        try {
+            DynamicTextureCache.onRegisterTexture(id, live, live.getPixels());
             DynamicTextureCache.Pixels captured = DynamicTextureCache.get(id);
 
             DynamicTextureCache.clear();
 
             assertSame(captured, DynamicTextureCache.get(id));
+        } finally {
+            live.close();
         }
     }
 
     @Test
-    void capacityPruningDropsClosedImageTexturesWithoutWaitingForCollection() {
-        Identifier closedId = Identifier.of("minecraft", "dynamic/pruned-map");
-        NativeImageBackedTexture closed = new NativeImageBackedTexture(new NativeImage(1, 1, true));
-        DynamicTextureCache.onRegisterTexture(closedId, closed, closed.getImage());
+    void capacityPruningDropsClosedImageTexturesWithoutWaitingForCollection() throws Exception {
+        Identifier closedId = Identifier.fromNamespaceAndPath("minecraft", "dynamic/pruned-map");
+        DynamicTexture closed = newDynamicTexture(new NativeImage(1, 1, true));
+        DynamicTextureCache.onRegisterTexture(closedId, closed, closed.getPixels());
         closed.close();
         List<AbstractTexture> live = new ArrayList<>();
         for (int i = 0; i < DynamicTextureCache.capacity(); i++) {
             AbstractTexture texture = newTexture();
             live.add(texture);
-            Identifier id = Identifier.of("minecraft", "skins/closed-map-neighbour-" + i);
+            Identifier id = Identifier.fromNamespaceAndPath("minecraft", "skins/closed-map-neighbour-" + i);
             try (NativeImage image = new NativeImage(1, 1, true)) {
                 DynamicTextureCache.onRegisterTexture(id, texture, image);
             }
         }
 
-        assertNull(closed.getImage());
+        assertTrue(closed.getPixels().isClosed());
         assertNull(DynamicTextureCache.get(closedId));
         assertEquals(DynamicTextureCache.capacity(), live.size());
     }
@@ -151,7 +158,7 @@ class DynamicTextureCacheTest {
      */
     @Test
     void clearDropsTheSnapshotOfATextureTheGameReleased() throws InterruptedException {
-        Identifier id = Identifier.of("minecraft", "skins/released");
+        Identifier id = Identifier.fromNamespaceAndPath("minecraft", "skins/released");
         AbstractTexture texture = newTexture();
         DynamicTextureCache.onRegisterTexture(id, texture, null);
         try (NativeImage image = new NativeImage(1, 1, true)) {
@@ -175,7 +182,7 @@ class DynamicTextureCacheTest {
 
     @Test
     void unknownIdsHaveNoPixels() {
-        Identifier id = Identifier.of("minecraft", "textures/entity/cow/cow.png");
+        Identifier id = Identifier.fromNamespaceAndPath("minecraft", "textures/entity/cow/cow.png");
 
         assertNull(DynamicTextureCache.get(id));
         assertFalse(DynamicTextureCache.isGlyphPage(id));
@@ -192,7 +199,7 @@ class DynamicTextureCacheTest {
         List<AbstractTexture> live = new ArrayList<>(count);
         List<Identifier> ids = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
-            Identifier id = Identifier.of("minecraft", "skins/crowd-" + i);
+            Identifier id = Identifier.fromNamespaceAndPath("minecraft", "skins/crowd-" + i);
             AbstractTexture texture = newTexture();
             live.add(texture);
             ids.add(id);
@@ -210,8 +217,22 @@ class DynamicTextureCacheTest {
 
     private static AbstractTexture newTexture() {
         return new AbstractTexture() {
-            @Override
-            public void load(ResourceManager manager) {}
         };
+    }
+
+    /**
+     * A dynamic texture over {@code pixels}. Its constructors create a GPU texture, which
+     * needs a graphics device a unit test does not have, and the cache reads only the
+     * pixels, so the instance is allocated without running them.
+     */
+    private static DynamicTexture newDynamicTexture(NativeImage pixels) throws Exception {
+        Field unsafeField = Unsafe.class.getDeclaredField("theUnsafe");
+        unsafeField.setAccessible(true);
+        Unsafe unsafe = (Unsafe) unsafeField.get(null);
+        DynamicTexture texture = (DynamicTexture) unsafe.allocateInstance(DynamicTexture.class);
+        Field pixelsField = DynamicTexture.class.getDeclaredField("pixels");
+        pixelsField.setAccessible(true);
+        pixelsField.set(texture, pixels);
+        return texture;
     }
 }

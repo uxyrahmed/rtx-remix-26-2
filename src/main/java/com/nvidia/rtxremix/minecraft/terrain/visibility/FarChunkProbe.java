@@ -4,19 +4,19 @@
  */
 package com.nvidia.rtxremix.minecraft.terrain.visibility;
 
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.MathHelper;
+import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
 
 /**
- * Vanilla's line-of-sight probe for sections far from the camera, without its per-step
- * allocations.
+ * Vanilla's line-of-sight probe for sections far from the camera, without its allocations.
  *
- * <p>Vanilla's visibility walk admits a neighbour more than 60 blocks from the camera only if
- * a ray from the neighbour's near corner toward the camera passes exclusively through
- * sections that exist and are already in the visible graph. It advances the ray in fixed
- * steps and, per step, allocates a Vec3d for the remaining offset, a Vec3d for the advanced
- * point and a BlockPos for the lookup. This reproduces the same arithmetic in the same order
- * on doubles, so the probed positions and the verdict are bit-identical to vanilla's.
+ * <p>Vanilla's visibility walk lets a section more than 60 blocks from the camera propagate
+ * to a neighbour only if a ray from a corner of the section toward the camera passes
+ * exclusively through sections that exist and are already in the visible graph. It holds the
+ * ray in two JOML vectors per probe and allocates a block position per step for the lookup.
+ * This reproduces the same arithmetic in the same order on doubles, through JOML's own
+ * {@code fma}, so the probed positions and the verdict are bit-identical to vanilla's whatever
+ * JOML's fused-multiply option says.
  */
 public final class FarChunkProbe {
 
@@ -28,22 +28,22 @@ public final class FarChunkProbe {
 
     /** Squared distance at which the ray is close enough to the camera to stop. */
     private static final double NEAR_CAMERA_DISTANCE_SQUARED = 3600.0;
-    /** Below this length vanilla's {@code Vec3d.normalize} yields the zero vector. */
-    private static final double NORMALIZE_EPSILON = 1.0E-4;
 
     private FarChunkProbe() {}
 
     /**
-     * Runs the probe from the neighbour section at {@code origin} entered through a face on
-     * {@code axis}, toward the camera at ({@code cameraX}, {@code cameraY}, {@code cameraZ}).
+     * Runs the probe from the section at {@code origin}, the section propagating, toward a
+     * neighbour across a face on {@code axis}, back toward the camera at ({@code cameraX},
+     * {@code cameraY}, {@code cameraZ}).
      *
+     * @param originX              block origin of the propagating section, per axis
      * @param cameraSectionCenterX camera section origin plus eight, per axis; picks the corner
-     *                             of the neighbour the ray starts from
+     *                             of the section the ray starts from
      * @param step                 ray advance per iteration in blocks
-     * @param worldTopYExclusive   one past the highest block, as {@code HeightLimitView.getTopY()}
-     *                             returns it (320 for the overworld); a point above it or below
-     *                             {@code worldBottomY} leaves the world, which passes
-     * @param worldBottomY         inclusive bottom of the world
+     * @param worldMaxY            highest block Y of the world, inclusive, as the view area
+     *                             gives it; a point above it or below {@code worldMinY} leaves
+     *                             the world, which passes
+     * @param worldMinY            lowest block Y of the world, inclusive
      * @return true when every probed section is in the graph or the ray left the world
      */
     public static boolean reachesCamera(
@@ -52,49 +52,45 @@ public final class FarChunkProbe {
             int cameraSectionCenterX, int cameraSectionCenterY, int cameraSectionCenterZ,
             double cameraX, double cameraY, double cameraZ,
             double step,
-            int worldTopYExclusive, int worldBottomY,
+            int worldMaxY, int worldMinY,
             GraphLookup graph) {
-        double pointX = originX + (axis == Direction.Axis.X
-                ? (cameraSectionCenterX > originX ? 16 : 0)
-                : (cameraSectionCenterX < originX ? 16 : 0));
-        double pointY = originY + (axis == Direction.Axis.Y
-                ? (cameraSectionCenterY > originY ? 16 : 0)
-                : (cameraSectionCenterY < originY ? 16 : 0));
-        double pointZ = originZ + (axis == Direction.Axis.Z
-                ? (cameraSectionCenterZ > originZ ? 16 : 0)
-                : (cameraSectionCenterZ < originZ ? 16 : 0));
+        boolean maxX = axis == Direction.Axis.X ? cameraSectionCenterX > originX : cameraSectionCenterX < originX;
+        boolean maxY = axis == Direction.Axis.Y ? cameraSectionCenterY > originY : cameraSectionCenterY < originY;
+        boolean maxZ = axis == Direction.Axis.Z ? cameraSectionCenterZ > originZ : cameraSectionCenterZ < originZ;
+        double pointX = originX + (maxX ? 16 : 0);
+        double pointY = originY + (maxY ? 16 : 0);
+        double pointZ = originZ + (maxZ ? 16 : 0);
 
-        double toCameraX = cameraX - pointX;
-        double toCameraY = cameraY - pointY;
-        double toCameraZ = cameraZ - pointZ;
-        double length = Math.sqrt(toCameraX * toCameraX + toCameraY * toCameraY + toCameraZ * toCameraZ);
-        double stepX = 0.0;
-        double stepY = 0.0;
-        double stepZ = 0.0;
-        if (!(length < NORMALIZE_EPSILON)) {
-            stepX = toCameraX / length * step;
-            stepY = toCameraY / length * step;
-            stepZ = toCameraZ / length * step;
-        }
+        // new Vector3d(camera).sub(point).normalize().mul(step)
+        double stepX = cameraX - pointX;
+        double stepY = cameraY - pointY;
+        double stepZ = cameraZ - pointZ;
+        double invLength = org.joml.Math.invsqrt(
+                org.joml.Math.fma(stepX, stepX, org.joml.Math.fma(stepY, stepY, stepZ * stepZ)));
+        stepX = stepX * invLength * step;
+        stepY = stepY * invLength * step;
+        stepZ = stepZ * invLength * step;
 
-        while (true) {
-            double remainingX = cameraX - pointX;
-            double remainingY = cameraY - pointY;
-            double remainingZ = cameraZ - pointZ;
-            if (!(remainingX * remainingX + remainingY * remainingY + remainingZ * remainingZ
-                    > NEAR_CAMERA_DISTANCE_SQUARED)) {
+        while (distanceSquared(pointX, pointY, pointZ, cameraX, cameraY, cameraZ) > NEAR_CAMERA_DISTANCE_SQUARED) {
+            pointX = pointX + stepX;
+            pointY = pointY + stepY;
+            pointZ = pointZ + stepZ;
+            if (pointY > (double) worldMaxY || pointY < (double) worldMinY) {
                 return true;
             }
-            pointX += stepX;
-            pointY += stepY;
-            pointZ += stepZ;
-            if (pointY > (double) worldTopYExclusive || pointY < (double) worldBottomY) {
-                return true;
-            }
-            if (!graph.contains(
-                    MathHelper.floor(pointX), MathHelper.floor(pointY), MathHelper.floor(pointZ))) {
+            if (!graph.contains(Mth.floor(pointX), Mth.floor(pointY), Mth.floor(pointZ))) {
                 return false;
             }
         }
+        return true;
+    }
+
+    /** JOML's {@code Vector3d.distanceSquared(x, y, z)}, in its evaluation order. */
+    private static double distanceSquared(double pointX, double pointY, double pointZ,
+                                          double cameraX, double cameraY, double cameraZ) {
+        double dx = pointX - cameraX;
+        double dy = pointY - cameraY;
+        double dz = pointZ - cameraZ;
+        return org.joml.Math.fma(dx, dx, org.joml.Math.fma(dy, dy, dz * dz));
     }
 }

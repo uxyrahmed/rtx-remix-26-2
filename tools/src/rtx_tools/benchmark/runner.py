@@ -203,7 +203,7 @@ def verify_jvm_matches_arch(arch: str) -> None:
     raise RuntimeError(
         f"benchmark arch {arch} does not match the JVM architecture {jvm_raw} "
         f"reported by {java_executable()}; the native SDK and JNI bridge must "
-        "match the JVM. On ARM64 runners install Microsoft Build of OpenJDK 21 "
+        "match the JVM. On ARM64 runners install Microsoft Build of OpenJDK 25 "
         "(ARM64) and remove any x64 Adoptium JDK or stale JAVA_HOME; see "
         "tools/docs/BENCHMARKING.md."
     )
@@ -2065,7 +2065,7 @@ def doctor_report(
     if java_home:
         add("ok", "java", f"JAVA_HOME={java_home}", javaArch=java_arch or "", processArch=process_arch or "")
     else:
-        add("error", "java", "Could not find a Java 21-style JDK with include/jni.h.")
+        add("error", "java", "Could not find a JDK with include/jni.h.")
 
     launcher_description = "Client launcher"
     try:
@@ -2443,6 +2443,34 @@ def install_fixtures(
     write_rtx_settings(config, run_dir=run_dir)
 
 
+# Minecraft 26.2's data version (world_version in the client's version.json),
+# the same value packaging/installer.ps1 writes. A new options.txt carries it
+# so the game reads the file as current instead of upgrading it from 1.21.1,
+# whose graphicsMode split fix would reset the graphics keys written below.
+OPTIONS_DATA_VERSION = "4903"
+
+# 26.2 has no graphicsMode option: data version 4651 split it into these keys.
+# The values per mode (0 Fast, 1 Fancy, 2 Fabulous) are the ones Mojang's
+# OptionsGraphicsModeSplitFix gives, so a pinned mode looks as it did on 1.21.1.
+GRAPHICS_MODE_OPTIONS = {
+    "0": {"cutoutLeaves": "false", "weatherRadius": "5", "vignette": "false", "improvedTransparency": "false"},
+    "1": {"cutoutLeaves": "true", "weatherRadius": "10", "vignette": "true", "improvedTransparency": "false"},
+    "2": {"cutoutLeaves": "true", "weatherRadius": "10", "vignette": "true", "improvedTransparency": "true"},
+}
+
+
+def graphics_mode_option_values(mode: object) -> dict[str, str]:
+    """options.txt keys that pin the configured graphicsMode on 26.2.
+
+    graphicsMode itself is still written: 26.2 ignores it, but an options.txt
+    an older version saved is upgraded on its first 26.2 launch, and the split
+    fix then derives the same keys from it instead of resetting them to Fancy.
+    Any value other than 0 or 2 means Fancy, as in the split fix."""
+    key = str(mode)
+    split = GRAPHICS_MODE_OPTIONS.get(key, GRAPHICS_MODE_OPTIONS["1"])
+    return {"graphicsMode": key, "graphicsPreset": "custom", **split}
+
+
 def minecraft_fov_option_value(value: object) -> str:
     if not isinstance(value, int | float | str):
         raise RuntimeError(f"invalid benchmark FOV value: {value!r}")
@@ -2554,7 +2582,7 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
         "enableVsync": "true" if render.get("vsync") else "false",
         "fullscreen": "true" if render.get("fullscreen") else "false",
         "fov": minecraft_fov_option_value(render.get("fov", 70)),
-        "graphicsMode": str(render.get("graphicsMode", 1)),
+        **graphics_mode_option_values(render.get("graphicsMode", 1)),
         "maxFps": str(render.get("maxFps", 260)),
         "renderDistance": str(render.get("renderDistance", 32)),
         "simulationDistance": str(render.get("simulationDistance", 12)),
@@ -2587,7 +2615,7 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
         return
 
     defaults = {
-        "version": "3955",
+        "version": OPTIONS_DATA_VERSION,
         "ao": "true",
         "biomeBlendRadius": "2",
         "prioritizeChunkUpdates": "1",

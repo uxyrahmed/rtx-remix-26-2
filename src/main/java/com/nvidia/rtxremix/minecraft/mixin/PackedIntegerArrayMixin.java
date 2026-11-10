@@ -5,8 +5,8 @@
 package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.terrain.capture.RenderRegionStoragePool;
-import net.minecraft.util.collection.PackedIntegerArray;
-import net.minecraft.util.collection.PaletteStorage;
+import net.minecraft.util.BitStorage;
+import net.minecraft.util.SimpleBitStorage;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -16,10 +16,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * While a render region snapshot is being taken, copies of packed block storage use a pooled
- * array instead of cloning a new one; the rebuild task returns it when the region is dead.
- * Every other copy (chunk serialisation, packets, world edits) is untouched.
+ * array instead of cloning a new one; the snapshot that made the copy owns the array and
+ * returns it when the last region holding it is dead ({@link RenderedChunkMixin}). Every other
+ * copy (chunk serialisation, packets, world edits) is untouched.
  */
-@Mixin(PackedIntegerArray.class)
+@Mixin(SimpleBitStorage.class)
 public abstract class PackedIntegerArrayMixin {
 
     @Shadow
@@ -27,17 +28,17 @@ public abstract class PackedIntegerArrayMixin {
     private long[] data;
     @Shadow
     @Final
-    private int elementBits;
+    private int bits;
     @Shadow
     @Final
     private int size;
 
     @Inject(method = "copy", at = @At("HEAD"), cancellable = true)
-    private void rtxremix$pooledCopy(CallbackInfoReturnable<PaletteStorage> cir) {
+    private void rtxremix$pooledCopy(CallbackInfoReturnable<BitStorage> cir) {
         if (RenderRegionStoragePool.copying()) {
-            long[] copy = RenderRegionStoragePool.acquire(data.length);
+            long[] copy = RenderRegionStoragePool.acquireForCopy(data.length);
             System.arraycopy(data, 0, copy, 0, data.length);
-            cir.setReturnValue(new PackedIntegerArray(elementBits, size, copy));
+            cir.setReturnValue(new SimpleBitStorage(bits, size, copy));
         }
     }
 }

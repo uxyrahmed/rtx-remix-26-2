@@ -9,8 +9,6 @@ import com.nvidia.rtxremix.minecraft.texture.BlockTextureManager;
 import com.nvidia.rtxremix.minecraft.terrain.ChunkManager;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
 import com.nvidia.rtxremix.HardcodedVertex;
-import net.minecraft.util.Identifier;
-
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
@@ -20,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
+import net.minecraft.resources.Identifier;
 
 /**
  * Writes block quad data directly into per-bucket interleaved
@@ -285,7 +284,7 @@ public final class DirectQuadWriter {
         String bk = isWater ? "water" : renderLayer;
         BlockTextureManager.SpriteEntry se = (spriteId != null && tex != null)
                 ? tex.getSpriteById(spriteId) : null;
-        if (se != null && se.hasSSS && tex != null && tex.getAtlasMaterialSSS(layerType) != null) {
+        if (se != null && se.usesSssMaterial(layerType) && tex != null && tex.getAtlasMaterialSSS(layerType) != null) {
             bk = sssBucketKeyForOriginalLayer(renderLayer, bk);
         }
         final String bucketKey = bk;
@@ -326,7 +325,7 @@ public final class DirectQuadWriter {
             if (cat == ChunkManager.CAT_SOLID && layerType != solidType) {
                 bk = "solid";
             }
-            if (se != null && se.hasSSS && tex != null && tex.getAtlasMaterialSSS(layerType) != null) {
+            if (se != null && se.usesSssMaterial(layerType) && tex != null && tex.getAtlasMaterialSSS(layerType) != null) {
                 bk = sssBucketKeyForOriginalLayer(layer, bk);
             }
             final String bucketKey = bk;

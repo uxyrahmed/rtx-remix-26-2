@@ -4,35 +4,33 @@
  */
 package com.nvidia.rtxremix.minecraft.entity;
 
+import com.mojang.blaze3d.vertex.PoseStack;
 import com.nvidia.rtxremix.InstanceCategoryBit;
-import com.nvidia.rtxremix.minecraft.mixin.EntityRenderDispatcherAccessor;
-import net.minecraft.block.entity.BlockEntity;
-import net.minecraft.block.entity.BlockEntityType;
-import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.render.entity.EntityRenderDispatcher;
-import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.math.Vec3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.IdentityHashMap;
 import java.util.List;
+import net.minecraft.client.renderer.SubmitNodeCollector;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityType;
+import net.minecraft.world.phys.Vec3;
 
 /**
- * Captures block-entity geometry where vanilla dispatches it and submits it through
+ * Captures block-entity geometry where vanilla submits it and submits it through
  * the entity submitter with the {@link BlockEntity} as owner.
  *
- * <p>{@code BlockEntityRenderDispatcherMixin} routes each vanilla dispatch to
- * {@code RemixRenderer.renderBlockEntityInPlace}, which calls {@link #capture}. The
- * block entity is rendered on this pass's own identity {@link RecyclingMatrixStack}
- * instead of vanilla's camera-relative one, so the captured pivots hold only the
- * renderer's block rotation and animation, and the instance root is a translation by
- * the block position, an integer that is exact in float. Vanilla still decides what
- * is rendered: {@code WorldRenderer} dispatches only the block entities of
- * frustum-visible sections, and the dispatcher's render-distance check runs inside
- * the wrapped call, so an out-of-range block entity enters capture, produces no
- * layers and is skipped.
+ * <p>{@code BlockEntityRenderDispatcherMixin} routes each vanilla submit of a block-entity
+ * render state to {@code RemixRenderer.renderBlockEntityInPlace}, which calls
+ * {@link #capture}. The state's renderer submits into this pass's
+ * {@link RemixVertexConsumerProvider}, which evaluates each node on the spot, on this
+ * pass's own identity {@link RecyclingMatrixStack} instead of vanilla's camera-relative
+ * one, so the captured pivots hold only the renderer's block rotation and animation, and
+ * the instance root is a translation by the block position, an integer that is exact in
+ * float. Vanilla still decides what is rendered: {@code LevelExtractor} extracts states
+ * only for the block entities of frustum-visible sections within each renderer's view
+ * distance, and only those states are submitted.
  *
  * <p>Block entities share the submitter's retained registry, mesh pool and material
  * cache with entities, so this pass holds no native state. A block entity vanilla does
@@ -57,12 +55,12 @@ public final class RemixBlockEntityPass {
                     : 0;
 
     /**
-     * Vanilla's dispatcher render with the matrix stack and provider left open, so the
+     * Vanilla's dispatcher submit with the matrix stack and collector left open, so the
      * pass can supply its own. The mixin's {@code Operation} handle stays in the mixin.
      */
     @FunctionalInterface
     public interface BlockEntityRenderCall {
-        void render(MatrixStack matrices, VertexConsumerProvider provider);
+        void render(PoseStack matrices, SubmitNodeCollector collector);
     }
 
     /**
@@ -86,52 +84,47 @@ public final class RemixBlockEntityPass {
     private long frameCaptureNanos, frameSubmitNanos;
 
     /**
-     * Renders one block entity through vanilla's renderer on the identity stack and
-     * submits the capture inside the submitter's open frame.
+     * Submits one block entity through vanilla's renderer on the identity stack into the
+     * capture and submits the capture inside the submitter's open frame.
      *
-     * <p>Submitting before the next block entity renders is what lets the provider's
+     * <p>Submitting before the next block entity is captured is what lets the provider's
      * consumers recycle: a layer's data is consumed before anything can overwrite it.
-     * Blob shadows are suppressed for the duration, as the entity pass does, so a
-     * spawner's display entity casts only the shadow Remix traces.
+     * Blob shadows, which a spawner's display entity submits, are dropped by the
+     * provider, so it casts only the shadow Remix traces.
      */
-    public void capture(BlockEntity be, BlockEntityRenderCall call,
-                        EntityRenderDispatcher dispatcher, RemixEntitySubmitter submitter) {
+    public void capture(BlockEntity be, BlockEntityRenderCall call, RemixEntitySubmitter submitter) {
         long captureStart = System.nanoTime();
         EntityRenderContext ctx = EntityRenderContext.get();
-        boolean hadShadows = ((EntityRenderDispatcherAccessor) dispatcher).rtxremix$getRenderShadows();
-        dispatcher.setRenderShadows(false);
         provider.beginEntity();
-        provider.setBlockOrigin(be.getPos());
-        matrices.push();
+        provider.setBlockOrigin(be.getBlockPos());
+        matrices.pushPose();
         ctx.begin(true);
         List<RemixVertexConsumerProvider.CapturedLayer> layers;
         try {
             call.render(matrices, provider);
             layers = provider.endEntity();
         } catch (Exception e) {
-            failures.noteFailure("capturing", "block entity " + typeKey(be), be.getPos(), e);
+            failures.noteFailure("capturing", "block entity " + typeKey(be), be.getBlockPos(), e);
             return;
         } finally {
-            // All three restore even if the renderer threw mid-traversal: the identity
-            // root returns every pooled entry, the player's shadow setting comes back,
-            // and a capture left open would make the next one look nested. The bone
-            // count stays readable for the snapshot below.
+            // Both restore even if the renderer threw mid-traversal: the identity root
+            // comes back, and a capture left open would make the next one look nested.
+            // The bone count stays readable for the snapshot below.
             matrices.reset();
-            dispatcher.setRenderShadows(hadShadows);
             ctx.reset();
         }
         frameCaptureNanos += System.nanoTime() - captureStart;
         if (layers.isEmpty()) {
-            // The dispatcher's own render-distance check ends here too. Snapshotting
-            // the zero bones it left would swap the reusable buffer for the shared
-            // empty array and force the next capture to allocate.
+            // A renderer with nothing to draw this frame ends here. Snapshotting the
+            // zero bones it left would swap the reusable buffer for the shared empty
+            // array and force the next capture to allocate.
             return;
         }
 
         reusableBoneData = ctx.snapshotBoneTransforms(reusableBoneData);
         RemixEntityPass.EntityCaptureResult result = new RemixEntityPass.EntityCaptureResult(
                 be,
-                Vec3d.of(be.getPos()),
+                Vec3.atLowerCornerOf(be.getBlockPos()),
                 0.0f,
                 layers,
                 reusableBoneData,
@@ -155,7 +148,7 @@ public final class RemixBlockEntityPass {
             submitter.submitEntity(result, STATIC_WORLD_CANVASES);
             frameCount++;
         } catch (Exception e) {
-            failures.noteFailure("submitting", "block entity " + typeKey(be), be.getPos(), e);
+            failures.noteFailure("submitting", "block entity " + typeKey(be), be.getBlockPos(), e);
         } finally {
             frameSubmitNanos += System.nanoTime() - submitStart;
             frameParts += submitter.getLastDrawCount() - partsBefore;
@@ -182,6 +175,6 @@ public final class RemixBlockEntityPass {
 
     private String typeKey(BlockEntity be) {
         return typeKeyCache.computeIfAbsent(be.getType(),
-                type -> Registries.BLOCK_ENTITY_TYPE.getId(type).toString());
+                type -> BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(type).toString());
     }
 }

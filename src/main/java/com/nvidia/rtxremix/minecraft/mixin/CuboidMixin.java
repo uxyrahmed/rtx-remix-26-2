@@ -4,13 +4,13 @@
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.nvidia.rtxremix.minecraft.entity.EntityRenderContext;
 import com.nvidia.rtxremix.minecraft.entity.RemixCapturingConsumer;
-import net.minecraft.client.model.ModelPart;
-import net.minecraft.client.render.SpriteTexturedVertexConsumer;
-import net.minecraft.client.render.VertexConsumer;
-import net.minecraft.client.texture.Sprite;
-import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.client.model.geom.ModelPart;
+import net.minecraft.client.renderer.SpriteCoordinateExpander;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -19,24 +19,26 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Intercepts {@code ModelPart.Cuboid.renderCuboid()} so a cuboid reaches the Remix
- * capture as the immutable object it is rather than as expanded vertices.
+ * Intercepts {@code ModelPart.Cube.compile()} so a cube reaches the Remix capture as
+ * the immutable object it is rather than as expanded vertices.
  *
  * <p>When the active {@link VertexConsumer} is a {@link RemixCapturingConsumer}
- * inside a Remix entity pass, directly or behind a {@link SpriteTexturedVertexConsumer},
- * the cuboid's sides, sprite, folded tint and pose are handed to the consumer, which
+ * inside a Remix entity pass, directly or behind a {@link SpriteCoordinateExpander},
+ * the cube's polygons, sprite, folded tint and pose are handed to the consumer, which
  * registers the pivot in the {@link EntityRenderContext} and records a rigid part
- * keyed by the cuboid's identity; the vanilla vertex write is cancelled.
+ * keyed by the cube's identity; the vanilla vertex write is cancelled. On 26.x the
+ * capture's collector renders models as their nodes are submitted, so this runs inside
+ * the submit of the entity or block entity whose part it is.
  */
-@Mixin(ModelPart.Cuboid.class)
+@Mixin(ModelPart.Cube.class)
 public class CuboidMixin {
 
     @Shadow
     @Final
-    private ModelPart.Quad[] sides;
+    public ModelPart.Polygon[] polygons;
 
-    @Inject(method = "renderCuboid", at = @At("HEAD"), cancellable = true)
-    private void rtxremix$onRenderCuboid(MatrixStack.Entry entry, VertexConsumer vertexConsumer,
+    @Inject(method = "compile", at = @At("HEAD"), cancellable = true)
+    private void rtxremix$onRenderCuboid(PoseStack.Pose entry, VertexConsumer vertexConsumer,
                                           int light, int overlay, int color,
                                           CallbackInfo ci) {
         // Sprite-atlas models (chests, beds, banners, shields, pots) draw through a
@@ -44,11 +46,11 @@ public class CuboidMixin {
         // The capture reproduces that remap when it rebuilds the cuboid, so the
         // wrapper is looked through and the sprite travels with the part: one cuboid
         // is baked once and painted with many sprites, so the sprite is part of the
-        // part's identity. A wrapper around anything else, such as the glint union
-        // ItemRenderer builds, is left to vanilla.
+        // part's identity. A wrapper around anything else, such as a renderer's own
+        // texture-coordinate remap, is left to vanilla.
         VertexConsumer target = vertexConsumer;
-        Sprite sprite = null;
-        if (target instanceof SpriteTexturedVertexConsumer wrapped) {
+        TextureAtlasSprite sprite = null;
+        if (target instanceof SpriteCoordinateExpander wrapped) {
             sprite = wrapped.sprite;
             target = wrapped.delegate;
         }
@@ -67,9 +69,9 @@ public class CuboidMixin {
         // would reuse another cuboid's geometry.
         // Folded before capture: the tint is an instance property downstream, so a
         // damage or priming flash is a per-instance update, never a new mesh.
-        consumer.acceptCuboid(this.sides,
+        consumer.acceptCuboid(this.polygons,
                 RemixCapturingConsumer.applyEntityOverlay(color, overlay),
-                entry.getPositionMatrix(),
+                entry.pose(),
                 sprite);
 
         ci.cancel();

@@ -5,24 +5,25 @@
 package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.terrain.SkyLightSurfaceAccess;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.lighting.ChunkSkyLightSources;
 import com.nvidia.rtxremix.minecraft.terrain.SeededSurfaceScan;
 import com.nvidia.rtxremix.minecraft.terrain.ChunkSections;
-import net.minecraft.block.BlockState;
-import net.minecraft.block.Blocks;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.world.BlockView;
-import net.minecraft.world.Heightmap;
-import net.minecraft.world.chunk.Chunk;
-import net.minecraft.world.chunk.light.ChunkSkyLight;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 
 /**
- * Exposes a seeded variant of {@code refreshSurfaceY} that reuses vanilla's private pair
- * predicate and palette writer, so the seeded walk and the full walk agree block for block.
- * Adds no state; server chunks never reach the new method.
+ * Exposes a seeded variant of {@code fillFrom} that reuses vanilla's private pair predicate
+ * and palette writer, so the seeded walk and the full walk agree block for block. Adds no
+ * state; server chunks never reach the new method.
+ *
+ * <p>Vanilla's pair predicate depends on the two states alone, so the positions the seeded
+ * walk passes to it are not consulted.
  */
-@Mixin(ChunkSkyLight.class)
+@Mixin(ChunkSkyLightSources.class)
 public abstract class ChunkSkyLightMixin implements SkyLightSurfaceAccess {
     @Shadow
     private void set(int index, int y) {
@@ -30,22 +31,20 @@ public abstract class ChunkSkyLightMixin implements SkyLightSurfaceAccess {
     }
 
     @Shadow
-    private static boolean faceBlocksLight(BlockView blockView, BlockPos upperPos, BlockState upperState,
-                                           BlockPos lowerPos, BlockState lowerState) {
+    private static boolean isEdgeOccluded(BlockState topState, BlockState bottomState) {
         throw new AssertionError();
     }
 
     @Shadow
-    private static int getPackedIndex(int localX, int localZ) {
+    private static int index(int localX, int localZ) {
         throw new AssertionError();
     }
 
     @Override
-    public void rtxremix$refreshSurfaceY(Chunk chunk, Heightmap worldSurface) {
-        SeededSurfaceScan.refreshSurfaceY(chunk, chunk.getHighestNonEmptySection(), worldSurface::get,
-                Blocks.AIR.getDefaultState(), new ChunkSections(chunk),
-                (upperPos, upperState, lowerPos, lowerState) ->
-                        faceBlocksLight(chunk, upperPos, upperState, lowerPos, lowerState),
-                (localX, localZ, surfaceY) -> set(getPackedIndex(localX, localZ), surfaceY));
+    public void rtxremix$refreshSurfaceY(ChunkAccess chunk, Heightmap worldSurface) {
+        SeededSurfaceScan.refreshSurfaceY(chunk, chunk.getHighestFilledSectionIndex(), worldSurface::getFirstAvailable,
+                Blocks.AIR.defaultBlockState(), new ChunkSections(chunk),
+                (upperPos, upperState, lowerPos, lowerState) -> isEdgeOccluded(upperState, lowerState),
+                (localX, localZ, surfaceY) -> set(index(localX, localZ), surfaceY));
     }
 }

@@ -4,11 +4,7 @@
  */
 package com.nvidia.rtxremix.minecraft.entity;
 
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.resource.Resource;
-import net.minecraft.resource.ResourceManager;
-import net.minecraft.util.Identifier;
-
+import com.mojang.blaze3d.platform.NativeImage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.HashMap;
@@ -17,13 +13,17 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import net.minecraft.client.renderer.blockentity.AbstractEndPortalRenderer;
+import net.minecraft.resources.Identifier;
+import net.minecraft.server.packs.resources.Resource;
+import net.minecraft.server.packs.resources.ResourceManager;
 
 /**
  * Bakes the starfield the end portal and end gateway surfaces are drawn with.
  *
  * <p>Vanilla draws both surfaces with position-only vertices and a shader
  * ({@code rendertype_end_portal.fsh}) that sums layers of
- * {@code textures/entity/end_portal.png}, each scaled, rotated and tinted, over
+ * {@code textures/entity/end_portal/end_portal.png}, each scaled, rotated and tinted, over
  * {@code textures/environment/end_sky.png}, projected in screen space: the pattern
  * stays put on screen while the camera moves. A path-traced hit has no screen
  * position to project from, and reflections and refractions see the surface from
@@ -47,8 +47,8 @@ import java.util.concurrent.ExecutionException;
  */
 final class EndPortalSurface {
 
-    static final Identifier PORTAL_TEXTURE_ID = Identifier.of("rtxremix", "end_portal_surface");
-    static final Identifier GATEWAY_TEXTURE_ID = Identifier.of("rtxremix", "end_gateway_surface");
+    static final Identifier PORTAL_TEXTURE_ID = Identifier.fromNamespaceAndPath("rtxremix", "end_portal_surface");
+    static final Identifier GATEWAY_TEXTURE_ID = Identifier.fromNamespaceAndPath("rtxremix", "end_gateway_surface");
     static final Optional<Identifier> PORTAL_TEXTURE = Optional.of(PORTAL_TEXTURE_ID);
     static final Optional<Identifier> GATEWAY_TEXTURE = Optional.of(GATEWAY_TEXTURE_ID);
 
@@ -104,10 +104,8 @@ final class EndPortalSurface {
      */
     static final float DESATURATION = 0.3f;
 
-    private static final Identifier SKY_TEXTURE =
-            Identifier.ofVanilla("textures/environment/end_sky.png");
-    private static final Identifier PORTAL_TEXTURE_SOURCE =
-            Identifier.ofVanilla("textures/entity/end_portal.png");
+    private static final Identifier SKY_TEXTURE = AbstractEndPortalRenderer.END_SKY_LOCATION;
+    private static final Identifier PORTAL_TEXTURE_SOURCE = AbstractEndPortalRenderer.END_PORTAL_LOCATION;
 
     /** {@code COLORS} in {@code rendertype_end_portal.fsh}, as RGB triples. */
     private static final float[] COLORS = {
@@ -185,14 +183,14 @@ final class EndPortalSurface {
     private static Image read(ResourceManager resources, Identifier id) {
         Resource resource = resources.getResource(id)
                 .orElseThrow(() -> new IllegalStateException("Missing texture " + id));
-        try (InputStream in = resource.getInputStream(); NativeImage image = NativeImage.read(in)) {
+        try (InputStream in = resource.open(); NativeImage image = NativeImage.read(in)) {
             int width = image.getWidth();
             int height = image.getHeight();
             int[] rgb = new int[width * height];
             for (int y = 0; y < height; y++) {
                 for (int x = 0; x < width; x++) {
-                    int abgr = image.getColor(x, y);
-                    rgb[y * width + x] = ((abgr & 0xFF) << 16) | (abgr & 0xFF00) | ((abgr >> 16) & 0xFF);
+                    // 26.x reads pixels as ARGB.
+                    rgb[y * width + x] = image.getPixel(x, y) & 0xFFFFFF;
                 }
             }
             return new Image(rgb, width, height);

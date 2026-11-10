@@ -19,6 +19,7 @@ layout(std140, binding = 0) uniform SkyParameters {
     vec4 SunRadianceAndAtmosphereScale;
     vec4 MoonRadianceValue;
     vec4 AtmosphereParameters;
+    vec4 StyleParameters;
 };
 
 #define SunDirection SunDirectionAndRadius.xyz
@@ -29,6 +30,17 @@ layout(std140, binding = 0) uniform SkyParameters {
 #define AtmosphereScale SunRadianceAndAtmosphereScale.w
 #define MoonRadiance MoonRadianceValue.xyz
 #define MieScatteringAnisotropy AtmosphereParameters.x
+// Art-direction controls; 0 and 1 leave the physical sky untouched.
+#define OzoneStrength AtmosphereParameters.y
+#define SkySaturation AtmosphereParameters.z
+// Brightens the sun's Mie halo beyond single scattering.
+#define SunHaloBoost AtmosphereParameters.w
+// Share of the upper hemisphere's mean radiance added back as multiple scattering.
+#define MultipleScatteringScale StyleParameters.x
+// Peak aurora radiance (0 draws none) and synchronized world time in seconds,
+// wrapped to AURORA_PERIOD.
+#define AuroraStrength StyleParameters.y
+#define AuroraTime StyleParameters.z
 
 shared vec3 Reduction[64];
 shared vec3 ReducedUpperMean;
@@ -57,9 +69,20 @@ const float RAYLEIGH_HEIGHT = 8000.0;
 const float MIE_HEIGHT = 1200.0;
 const vec3 BETA_R = vec3(5.5e-6, 13.0e-6, 22.4e-6);
 const float BETA_M = 21.0e-6;
-const float SUN_MIE_HALO_BOOST = 10.35;
+// Ozone absorbs and never scatters. Its layer is a tent around 25 km, thin
+// enough that its column takes more steps than the exponential layers.
+const vec3 BETA_O = vec3(0.650e-6, 1.881e-6, 0.085e-6);
+const float OZONE_CENTER_HEIGHT = 25000.0;
+const float OZONE_HALF_WIDTH = 15000.0;
+const int OZONE_LIGHT_STEPS = 128;
+const vec3 LUMINANCE_WEIGHTS = vec3(0.2126, 0.7152, 0.0722);
+// Every aurora frequency is a whole number of cycles per AURORA_PERIOD
+// seconds, so the wrapped time the CPU sends loops without a seam.
+const float AURORA_PERIOD = 600.0;
+const float AURORA_CYCLE = 2.0 * PI / AURORA_PERIOD;
+const vec3 AURORA_GREEN = vec3(0.10, 1.0, 0.45);
+const vec3 AURORA_VIOLET = vec3(0.80, 0.25, 1.0);
 const float MOON_MIE_HALO_BOOST = 1.0;
-const float MULTIPLE_SCATTERING_SCALE = 0.65;
 const float GROUND_HORIZON_SCALE = 0.9;
 const float GROUND_NADIR_SCALE = 0.3;
 
@@ -77,6 +100,60 @@ float raySphere(vec3 origin, vec3 direction, float radius) {
         return -1.0;
     }
     return nearDistance < 0.0 ? farDistance : nearDistance;
+}
+
+float ozoneDensity(float height) {
+    return max(0.0, 1.0 - abs(height - OZONE_CENTER_HEIGHT) / OZONE_HALF_WIDTH);
+}
+
+vec3 ozoneTransmittance(float ozoneColumn) {
+    return exp(-OzoneStrength * BETA_O * ozoneColumn);
+}
+
+// Written out rather than with mix() so a saturation of 1 returns the
+// radiance itself, whatever form the driver gives mix().
+vec3 applySkySaturation(vec3 radiance) {
+    float luminance = dot(radiance, LUMINANCE_WEIGHTS);
+    return max(radiance * SkySaturation + vec3(luminance * (1.0 - SkySaturation)), vec3(0.0));
+}
+
+// One aurora curtain hanging over the northern sky, in azimuth (0 due north)
+// and elevation, both in radians. Its foot waves along the horizon, its light
+// is brightest just above the foot and fades upwards from green to violet, and
+// folds run along its length.
+vec3 auroraCurtain(float azimuth, float elevation, float foot, float height, float t, float seed) {
+    float footElevation = foot
+        + 0.06 * sin(1.7 * azimuth + AURORA_CYCLE * 7.0 * t + seed)
+        + 0.025 * sin(4.1 * azimuth - AURORA_CYCLE * 13.0 * t + 2.0 * seed);
+    float rise = (elevation - footElevation) / height;
+    if (rise <= 0.0 || rise >= 1.0) {
+        return vec3(0.0);
+    }
+    float profile = smoothstep(0.0, 0.08, rise) * pow(1.0 - rise, 1.6);
+    float fold = 0.5 + 0.5 * sin(13.0 * azimuth + AURORA_CYCLE * 29.0 * t
+        + 2.0 * sin(5.0 * azimuth - AURORA_CYCLE * 19.0 * t + seed));
+    float folds = 0.35 + 0.65 * fold * fold;
+    vec3 color = mix(AURORA_GREEN, AURORA_VIOLET, smoothstep(0.35, 1.0, rise));
+    return color * (profile * folds);
+}
+
+// The aurora seen in one direction of the sky; zero when there is none.
+vec3 aurora(vec3 direction) {
+    if (AuroraStrength <= 0.0 || direction.y <= 0.0) {
+        return vec3(0.0);
+    }
+    float horizontal = length(direction.xz);
+    float northness = horizontal > 0.0 ? -direction.z / horizontal : 0.0;
+    float window = smoothstep(-0.35, 0.25, northness);
+    if (window <= 0.0) {
+        return vec3(0.0);
+    }
+    float azimuth = atan(direction.x, -direction.z);
+    float elevation = asin(clamp(direction.y, 0.0, 1.0));
+    float t = AuroraTime;
+    vec3 light = auroraCurtain(azimuth, elevation, 0.24, 0.42, t, 0.0)
+        + 0.55 * auroraCurtain(azimuth, elevation, 0.42, 0.32, t, 2.1);
+    return light * (AuroraStrength * window);
 }
 
 vec3 skyDirection(ivec2 pixel) {
@@ -115,10 +192,20 @@ void buildTransmittanceLut(ivec2 pixel) {
         opticalR += BETA_R * densityR;
         opticalM += BETA_M * densityM;
     }
+    float ozoneStepSize = lightDistance / float(OZONE_LIGHT_STEPS);
+    float ozoneColumn = 0.0;
+    for (int step = 0; step < OZONE_LIGHT_STEPS; step++) {
+        float distance = (float(step) + 0.5) * ozoneStepSize;
+        vec3 samplePosition = origin + direction * distance;
+        float height = max(0.0, length(samplePosition) - EARTH_RADIUS);
+        ozoneColumn += ozoneDensity(height) * ozoneStepSize;
+    }
+    // Alpha carries the ozone column rather than a transmittance, so the
+    // ozone strength can change every frame without rebuilding the table.
     imageStore(
         TransmittanceLutImage,
         pixel,
-        vec4(exp(-(opticalR + vec3(opticalM))), 1.0));
+        vec4(exp(-(opticalR + vec3(opticalM))), ozoneColumn));
 }
 
 bool sampleLight(
@@ -139,7 +226,8 @@ bool sampleLight(
         * 0.5 * float(LUT_WIDTH - 1);
     vec2 uv = (vec2(angleCoordinate, heightCoordinate) + vec2(0.5))
         / vec2(float(LUT_WIDTH), float(LUT_HEIGHT));
-    transmittance = texture(TransmittanceLut, uv).rgb;
+    vec4 lut = texture(TransmittanceLut, uv);
+    transmittance = lut.rgb * ozoneTransmittance(lut.a);
     return true;
 }
 
@@ -189,6 +277,7 @@ void generateSingleScattering(ivec2 pixel) {
     float stepSize = atmosphereDistance / float(VIEW_STEPS);
     vec3 opticalR = vec3(0.0);
     float opticalM = 0.0;
+    float ozoneColumn = 0.0;
     vec3 sunRayleigh = vec3(0.0);
     vec3 sunMie = vec3(0.0);
     vec3 moonRayleigh = vec3(0.0);
@@ -203,7 +292,9 @@ void generateSingleScattering(ivec2 pixel) {
         float densityM = exp(-height / MIE_HEIGHT) * stepSize;
         opticalR += BETA_R * densityR;
         opticalM += BETA_M * densityM;
-        vec3 viewTransmittance = exp(-(opticalR + vec3(opticalM)));
+        ozoneColumn += ozoneDensity(height) * stepSize;
+        vec3 viewTransmittance = exp(-(opticalR + vec3(opticalM)))
+            * ozoneTransmittance(ozoneColumn);
         accumulateLight(
             samplePosition,
             radius,
@@ -224,14 +315,15 @@ void generateSingleScattering(ivec2 pixel) {
             moonMie);
     }
 
-    vec3 viewTransmittance = exp(-(opticalR + vec3(opticalM)));
+    vec3 viewTransmittance = exp(-(opticalR + vec3(opticalM)))
+        * ozoneTransmittance(ozoneColumn);
     vec3 singleScattering = finishScattering(
         viewDirection,
         SunDirection,
         SunRadiance,
         sunRayleigh,
         sunMie,
-        SUN_MIE_HALO_BOOST);
+        SunHaloBoost);
     singleScattering += finishScattering(
         viewDirection,
         MoonDirection,
@@ -288,17 +380,19 @@ void reduceAndComposeSky() {
             imageLoad(UpperSingleImage, pixel).rgb;
         vec3 viewTransmittance =
             imageLoad(UpperViewImage, pixel).rgb;
-        vec3 radiance = max(
+        vec3 radiance = applySkySaturation(
             singleScattering
             + ReducedUpperMean * (vec3(1.0) - viewTransmittance)
-            * MULTIPLE_SCATTERING_SCALE,
-            vec3(0.0));
+            * MultipleScatteringScale);
         vec2 quantizedRg =
             unpackHalf2x16(packHalf2x16(radiance.rg));
         vec2 quantizedBa =
             unpackHalf2x16(packHalf2x16(vec2(radiance.b, 1.0)));
         finalSum += vec3(quantizedRg, quantizedBa.x);
-        imageStore(FinalSkyImage, pixel, vec4(radiance, 1.0));
+        // The aurora is drawn into the dome but left out of the mean, which
+        // feeds the ambient light, so it never tints the world through it.
+        imageStore(FinalSkyImage, pixel,
+            vec4(radiance + aurora(skyDirection(pixel)), 1.0));
     }
     memoryBarrierImage();
     Reduction[invocation] = finalSum;
@@ -321,11 +415,11 @@ void reduceAndComposeSky() {
 
     for (int x = int(invocation); x < SKY_WIDTH; x += 64) {
         ivec2 horizonPixel = ivec2(x, UPPER_HEIGHT - 1);
-        vec3 horizon =
+        vec3 horizon = applySkySaturation(
             imageLoad(UpperSingleImage, horizonPixel).rgb
             + ReducedUpperMean
             * (vec3(1.0) - imageLoad(UpperViewImage, horizonPixel).rgb)
-            * MULTIPLE_SCATTERING_SCALE;
+            * MultipleScatteringScale);
         for (int y = UPPER_HEIGHT; y < SKY_HEIGHT; y++) {
             float amount = float(y - UPPER_HEIGHT)
                 / float(SKY_HEIGHT - UPPER_HEIGHT - 1);

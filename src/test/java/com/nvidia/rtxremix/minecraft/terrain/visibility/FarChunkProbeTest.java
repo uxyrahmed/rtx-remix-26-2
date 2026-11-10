@@ -4,15 +4,16 @@
  */
 package com.nvidia.rtxremix.minecraft.terrain.visibility;
 
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.MathHelper;
-import net.minecraft.util.math.Vec3d;
+import org.joml.Vector3d;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
+import net.minecraft.world.phys.Vec3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -21,37 +22,37 @@ class FarChunkProbeTest {
 
     /** {@code ceil(sqrt(3) * 16)}, vanilla's step. */
     private static final double STEP = Math.ceil(Math.sqrt(3.0) * 16.0);
-    /** The overworld's range as the mixin passes it: getBottomY() and getTopY(), the latter one past the top block. */
-    private static final int WORLD_BOTTOM = -64;
-    private static final int WORLD_TOP = 320;
+    /** The overworld's range as the walk passes it: the view area's minY() and maxY(), both inclusive. */
+    private static final int WORLD_MIN_Y = -64;
+    private static final int WORLD_MAX_Y = 319;
 
     /**
-     * Vanilla's probe, transcribed with its Vec3d chain intact. The port must probe the same
-     * block positions in the same order and reach the same verdict.
+     * Vanilla's probe, transcribed with its JOML vector chain intact. The port must probe the
+     * same block positions in the same order and reach the same verdict.
      */
     private enum Verdict { REACHED, BLOCKED, LEFT_WORLD }
 
     private static Verdict vanillaReachesCamera(
-            BlockPos origin, Direction direction, BlockPos cameraSectionCenter, Vec3d cameraPos,
-            int worldTop, int worldBottom, FarChunkProbe.GraphLookup graph) {
-        BlockPos corner = origin.add(
-                direction.getAxis() == Direction.Axis.X
-                        ? (cameraSectionCenter.getX() > origin.getX() ? 16 : 0)
-                        : (cameraSectionCenter.getX() < origin.getX() ? 16 : 0),
-                direction.getAxis() == Direction.Axis.Y
-                        ? (cameraSectionCenter.getY() > origin.getY() ? 16 : 0)
-                        : (cameraSectionCenter.getY() < origin.getY() ? 16 : 0),
-                direction.getAxis() == Direction.Axis.Z
-                        ? (cameraSectionCenter.getZ() > origin.getZ() ? 16 : 0)
-                        : (cameraSectionCenter.getZ() < origin.getZ() ? 16 : 0));
-        Vec3d point = new Vec3d(corner.getX(), corner.getY(), corner.getZ());
-        Vec3d step = cameraPos.subtract(point).normalize().multiply(STEP);
-        while (cameraPos.subtract(point).lengthSquared() > 3600.0) {
-            point = point.add(step);
-            if (point.y > worldTop || point.y < worldBottom) {
+            BlockPos origin, Direction direction, BlockPos cameraSectionCenter, Vec3 cameraPos,
+            int worldMaxY, int worldMinY, FarChunkProbe.GraphLookup graph) {
+        boolean maxX = direction.getAxis() == Direction.Axis.X
+                ? cameraSectionCenter.getX() > origin.getX()
+                : cameraSectionCenter.getX() < origin.getX();
+        boolean maxY = direction.getAxis() == Direction.Axis.Y
+                ? cameraSectionCenter.getY() > origin.getY()
+                : cameraSectionCenter.getY() < origin.getY();
+        boolean maxZ = direction.getAxis() == Direction.Axis.Z
+                ? cameraSectionCenter.getZ() > origin.getZ()
+                : cameraSectionCenter.getZ() < origin.getZ();
+        Vector3d checkPos = new Vector3d(
+                origin.getX() + (maxX ? 16 : 0), origin.getY() + (maxY ? 16 : 0), origin.getZ() + (maxZ ? 16 : 0));
+        Vector3d step = new Vector3d(cameraPos.x, cameraPos.y, cameraPos.z).sub(checkPos).normalize().mul(STEP);
+        while (checkPos.distanceSquared(cameraPos.x, cameraPos.y, cameraPos.z) > 3600.0) {
+            checkPos.add(step);
+            if (checkPos.y > worldMaxY || checkPos.y < worldMinY) {
                 return Verdict.LEFT_WORLD;
             }
-            BlockPos probe = BlockPos.ofFloored(point.x, point.y, point.z);
+            BlockPos probe = BlockPos.containing(checkPos.x, checkPos.y, checkPos.z);
             if (!graph.contains(probe.getX(), probe.getY(), probe.getZ())) {
                 return Verdict.BLOCKED;
             }
@@ -78,16 +79,16 @@ class FarChunkProbeTest {
 
     @Test
     void probesTheSamePositionsAndVerdictAsVanillaInTheOverworld() {
-        probesTheSamePositionsAndVerdictAsVanilla(WORLD_TOP, WORLD_BOTTOM, 0x5EED);
+        probesTheSamePositionsAndVerdictAsVanilla(WORLD_MAX_Y, WORLD_MIN_Y, 0x5EED);
     }
 
-    /** The Nether's 0..128 range: a shorter world, so more rays cross out of it. */
+    /** The Nether's 0..127 range: a shorter world, so more rays cross out of it. */
     @Test
     void probesTheSamePositionsAndVerdictAsVanillaInTheNether() {
-        probesTheSamePositionsAndVerdictAsVanilla(128, 0, 0x7E7);
+        probesTheSamePositionsAndVerdictAsVanilla(127, 0, 0x7E7);
     }
 
-    private static void probesTheSamePositionsAndVerdictAsVanilla(int worldTop, int worldBottom, long seed) {
+    private static void probesTheSamePositionsAndVerdictAsVanilla(int worldMaxY, int worldMinY, long seed) {
         Random random = new Random(seed);
         int passes = 0;
         int leftTheWorld = 0;
@@ -95,25 +96,26 @@ class FarChunkProbeTest {
             // The camera ranges well outside the world: a ray between two points inside
             // the height range never leaves it, so only a camera above build height or
             // below bedrock (both reachable in spectator) exercises the early exit.
-            Vec3d cameraPos = new Vec3d(
+            Vec3 cameraPos = new Vec3(
                     (random.nextDouble() - 0.5) * 200.0,
-                    worldBottom - 128 + random.nextDouble() * (worldTop - worldBottom + 256),
+                    worldMinY - 128 + random.nextDouble() * (worldMaxY - worldMinY + 256),
                     (random.nextDouble() - 0.5) * 200.0);
             BlockPos cameraSectionOrigin = new BlockPos(
-                    MathHelper.floor(cameraPos.x / 16.0) * 16,
-                    MathHelper.floor(cameraPos.y / 16.0) * 16,
-                    MathHelper.floor(cameraPos.z / 16.0) * 16);
-            BlockPos cameraSectionCenter = cameraSectionOrigin.add(8, 8, 8);
+                    Mth.floor(cameraPos.x) >> 4 << 4,
+                    Mth.floor(cameraPos.y) >> 4 << 4,
+                    Mth.floor(cameraPos.z) >> 4 << 4);
+            BlockPos cameraSectionCenter = cameraSectionOrigin.offset(8, 8, 8);
+            // The propagating section, the corner of which the ray starts from.
             BlockPos origin = new BlockPos(
                     (random.nextInt(80) - 40) * 16,
-                    MathHelper.clamp((random.nextInt(30) - 5) * 16, worldBottom, worldTop - 16),
+                    Mth.clamp((random.nextInt(30) - 5) * 16, worldMinY, worldMaxY + 1 - 16),
                     (random.nextInt(80) - 40) * 16);
             Direction direction = Direction.values()[random.nextInt(6)];
             long salt = random.nextLong();
 
             RecordingGraph vanillaGraph = new RecordingGraph(salt);
             Verdict verdict = vanillaReachesCamera(
-                    origin, direction, cameraSectionCenter, cameraPos, worldTop, worldBottom, vanillaGraph);
+                    origin, direction, cameraSectionCenter, cameraPos, worldMaxY, worldMinY, vanillaGraph);
             boolean expected = verdict != Verdict.BLOCKED;
 
             RecordingGraph portedGraph = new RecordingGraph(salt);
@@ -123,7 +125,7 @@ class FarChunkProbeTest {
                     cameraSectionCenter.getX(), cameraSectionCenter.getY(), cameraSectionCenter.getZ(),
                     cameraPos.x, cameraPos.y, cameraPos.z,
                     STEP,
-                    worldTop, worldBottom,
+                    worldMaxY, worldMinY,
                     portedGraph);
 
             assertEquals(expected, actual, "verdict, trial " + trial);
@@ -146,7 +148,7 @@ class FarChunkProbeTest {
                 0, 0, 0, Direction.Axis.X,
                 8, 8, 8,
                 16.0, 0.0, 0.0,
-                STEP, WORLD_TOP, WORLD_BOTTOM, graph);
+                STEP, WORLD_MAX_Y, WORLD_MIN_Y, graph);
 
         assertTrue(reaches);
         assertTrue(graph.probed.isEmpty());

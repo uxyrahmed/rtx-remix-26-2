@@ -15,6 +15,35 @@ class VanillaCloudPlacementTest {
     private static final int TEXTURE_SIZE = 256;
 
     @Test
+    void driftClockFoldsGameTimeIntoOneTextureRepeat() {
+        assertEquals(
+                VanillaCloudPlacement.WORLD_PERIOD,
+                VanillaCloudPlacement.PERIOD_TICKS * VanillaCloudPlacement.DRIFT_PER_TICK,
+                1.0e-6);
+        assertEquals(10.5, VanillaCloudPlacement.driftTicks(10L, 0.5f), 1.0e-9);
+        assertEquals(
+                10.5,
+                VanillaCloudPlacement.driftTicks(3L * VanillaCloudPlacement.PERIOD_TICKS + 10L, 0.5f),
+                1.0e-9);
+    }
+
+    @Test
+    void foldedClockPlacesTheSameCloudsAsTheUnfoldedTime() {
+        long gameTime = 5L * VanillaCloudPlacement.PERIOD_TICKS + 1234L;
+        List<VanillaCloudPlacement.Placement> unfolded = placements(100.0, -50.0, gameTime + 0.25);
+        List<VanillaCloudPlacement.Placement> folded =
+                placements(100.0, -50.0, VanillaCloudPlacement.driftTicks(gameTime, 0.25f));
+
+        assertEquals(unfolded.size(), folded.size());
+        for (int i = 0; i < unfolded.size(); i++) {
+            double shift = unfolded.get(i).x() - folded.get(i).x();
+            double repeats = shift / VanillaCloudPlacement.WORLD_PERIOD;
+            assertEquals(Math.rint(repeats), repeats, 1.0e-6, "placements differ by whole texture repeats");
+            assertEquals(unfolded.get(i).z(), folded.get(i).z(), 1.0e-9);
+        }
+    }
+
+    @Test
     void preservesVanillaDriftAndZPhase() {
         List<VanillaCloudPlacement.Placement> placements = placements(0.0, 0.0, 10.0);
         VanillaCloudPlacement.Placement origin = placements.stream()

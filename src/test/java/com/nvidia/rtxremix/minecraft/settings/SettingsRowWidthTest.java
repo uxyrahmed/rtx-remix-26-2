@@ -79,6 +79,7 @@ class SettingsRowWidthTest {
             entry("rtxremix.setting.dist.entity", "Auto"),
             entry("rtxremix.setting.light.reach", "256"),
             entry("rtxremix.setting.framerate.unfocused", "Unlimited"),
+            entry("rtxremix.setting.sky.vividLook", "Natural"),
             entry("rtxremix.setting.sky.enabled", "OFF"),
             entry("rtxremix.setting.sky.ambient", "OFF"),
             entry("rtxremix.setting.sky.haloFocus", "0.99"),

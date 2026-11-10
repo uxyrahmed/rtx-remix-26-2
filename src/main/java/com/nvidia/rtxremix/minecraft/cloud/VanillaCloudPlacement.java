@@ -13,8 +13,20 @@ final class VanillaCloudPlacement {
     static final double VIEW_DISTANCE = CloudPlacement.VIEW_DISTANCE;
     static final double DRIFT_PER_TICK = 0.03;
     static final double Z_PHASE = 0.33;
+    /** Ticks the drift takes to cross the texture once: 256 cells of 400 ticks each. */
+    static final long PERIOD_TICKS = 256L * 400L;
 
     private VanillaCloudPlacement() {
+    }
+
+    /**
+     * Vanilla's cloud clock: the synchronized game time folded into one drift period,
+     * plus the partial tick. Folding keeps vanilla's period and phase, since a whole
+     * period moves the clouds by exactly one texture repeat, and keeps the drift exact
+     * at any game time.
+     */
+    static double driftTicks(long gameTime, float partialTicks) {
+        return Math.floorMod(gameTime, PERIOD_TICKS) + (double) partialTicks;
     }
 
     /**

@@ -20,7 +20,8 @@ Three things can decide what a rendering option is worth. When they disagree,
 the later one in this list wins.
 
 **Conf files**, which is everything in this guide. `rtx.conf` is the baseline
-and the profiles under `confs/` fade over it by situation.
+and the profiles under `confs/` fade over it by situation, and by the look the
+player selects.
 
 **The mod's settings screen**, under Options, then RTX Remix Settings. Most of
 it never argues with a profile. The controls on the Image & Exposure page are
@@ -72,6 +73,45 @@ Then reload and walk the clock:
 the clock keeps running while you type, so the second number drifts. Those
 strengths feed the blend and confirm the schedule even when the picture barely
 moves, and a look lands on the next frame rather than creeping toward it.
+
+## Looks
+
+A look is a whole art direction the player chooses, rather than a situation
+the game reaches. The mod ships two: **Natural**, which is `rtx.conf` and the
+profiles in this guide as they are, and **Vivid**: warm golden light, a deeper
+blue sky, dark moonlit blue nights with twinkling stars and auroras, haze with
+light shafts, light sources glowing through the air in caves, soft bloom, and
+a gentle vignette. Players switch under Options, RTX Remix Settings, Lighting,
+**Look**, or with `/rtx look vivid` and `/rtx look natural`; the choice is
+saved with the mod's settings and fades with the same half-second half-life as
+a biome profile.
+
+Vivid is six profiles in `confs/looks/vivid/`. `base.conf` holds what Vivid
+sets at every time of day and in every dimension. `dawn.conf`, `day.conf`,
+`dusk.conf`, and `night.conf` follow the same Overworld schedule as the time
+profiles, so they obey the same rules: name an animated option in all four,
+and expect them to be held at zero outside the Overworld. They sit directly
+above the time profiles and below weather, so Vivid restyles the time of day
+while rain, thunder, biomes, zones, and water still win the options they name.
+`enclosed.conf` takes over wherever the camera has no open sky above it, eased
+from the sky light where the camera stands: a cave, a ruin's interior, a
+roofed room. It sits above weather, since rain never falls there, and sets its
+own haze, bloom, and exposure, so a cave looks the same at noon and at
+midnight. Dimensions without sky light never count as enclosed.
+
+With Natural selected all six are at strength zero. The six files are one
+family, like the time profiles: if any of them fails to load, all six are
+dropped, the sky stays Natural too, and `/rtx conf status` reports them
+unacquired. The tonemapping and eye-adaptation options Vivid sets are among
+those the Image & Exposure page takes over once a player moves its controls.
+
+Part of Vivid is not a conf. The mod also warms the sunlight, gives the moon a
+bluer light, softens the sun's halo, adds an ozone layer and extra saturation
+to the sky, makes the stars twinkle, and draws auroras over the northern sky
+after dusk, fading them all with the same strength. The twinkling and the
+aurora follow the world's synchronized game time, so every player in a world
+sees the same sky. Retune the conf half by editing these six files and running
+`/rtx conf reload`, as with any profile.
 
 ## Quick Start: A Zone, And Shipping It In Your Map
 
@@ -174,7 +214,7 @@ this mod. Four places to find one:
 
 **Naming rules.** A zone file name is one word with no spaces and no leading
 `--`; `zones/lighthouse.conf` creates the channel `mc.zone.lighthouse`. A biome
-file name is the exact path part of a vanilla Minecraft 1.21.1 biome id, in
+file name is the exact path part of a vanilla Minecraft 26.2 biome id, in
 lowercase: `minecraft:desert` is `biomes/desert.conf`. A name the mod does not
 recognise is skipped with a warning in `logs/latest.log` and never appears in
 `/rtx conf status all`.
@@ -245,8 +285,14 @@ from several places with a shared channel.
 | `confs/zones/<name>.conf` | Distance falloff: 0 to 1 | 11000 | 0.01 | Half-second half-life |
 | Map `biomes/<biome>.conf` | Camera is in that biome: 0 or 1 | 6500 | 0.01 | Half-second half-life |
 | `confs/biomes/<biome>.conf` | Camera is in that biome: 0 or 1 | 6000 | 0.01 | Half-second half-life |
+| `confs/looks/vivid/enclosed.conf` | Look strength times how enclosed the camera is: 0 under open sky, 1 at sky light 4 or less | 5600 | 0.50 | Half-second half-life |
 | `confs/weather/thunder.conf` | Vanilla thunder gradient: 0 to 1 | 5500 | 0.01 | Immediate; vanilla ramps the gradient over about five seconds |
 | `confs/weather/rain.conf` | Vanilla rain gradient: 0 to 1 | 5000 | 0.01 | Immediate; vanilla ramps the gradient over about five seconds |
+| `confs/looks/vivid/night.conf` | Look strength times the night schedule | 4104 | 0.50 | The look's half-life, then the clock curve below |
+| `confs/looks/vivid/dusk.conf` | Look strength times the dusk schedule | 4103 | 0.50 | The look's half-life, then the clock curve below |
+| `confs/looks/vivid/day.conf` | Look strength times the day schedule | 4102 | 0.50 | The look's half-life, then the clock curve below |
+| `confs/looks/vivid/dawn.conf` | Look strength times the dawn schedule | 4101 | 0.50 | The look's half-life, then the clock curve below |
+| `confs/looks/vivid/base.conf` | Look strength: 0 for Natural, 1 for Vivid | 4100 | 0.50 | Half-second half-life |
 | `confs/time/night.conf` | Fixed Overworld schedule | 4003 | 0.50 | The clock curve below |
 | `confs/time/dusk.conf` | Fixed Overworld schedule | 4002 | 0.50 | The clock curve below |
 | `confs/time/day.conf` | Fixed Overworld schedule | 4001 | 0.50 | The clock curve below |
@@ -332,12 +378,13 @@ replaces the active entry.
 
 | Defined by | Single-player | On a server |
 |---|---|---|
-| `/rtx zone define` | Saved into `<world>/data/rtx_remix_zones.dat` and restored on join | Local to your client for that session, not saved and not shared |
+| `/rtx zone define` | Saved into `<world>/data/rtx-remix-renderer/zones.dat` and restored on join | Local to your client for that session, not saved and not shared |
 | A marker command block | Read as chunks load, and on `/rtx zone rescan`. Stays in the block, not in the saved file | Unavailable |
 | A map profile under `<world>/rtx-remix/confs/` | Loaded on join, dropped on leave | Unavailable |
 
-`rtx_remix_zones.dat` is optional. A map whose zones are all command blocks
-never creates one. `/rtx zone remove` deletes the saved definition in
+`zones.dat` is optional. A map whose zones are all command blocks never
+creates one. A save from 1.21.1 kept the file as `data/rtx_remix_zones.dat`;
+it is still read until the first zone edit writes the new file. `/rtx zone remove` deletes the saved definition in
 single-player, but a marker block can register the same name again on a later
 chunk load or rescan, so remove the block as well. Zone coordinates are not
 scoped to a dimension: the same coordinates in another dimension are inside the
@@ -444,6 +491,7 @@ with the project's source.
 | `/rtx conf reload` | Re-reads every profile in both roots and re-scans the `zones/` and `biomes/` folders. It does not scan command blocks |
 | `/rtx conf status` | Shows the profiles with a nonzero strength, and anything that failed to load |
 | `/rtx conf status all` | Everything, idle profiles included, naming each one's root. A map profile is listed as `world/<channel>` |
+| `/rtx look`, `/rtx look vivid`, `/rtx look natural` | Report or select the look; the Vivid profiles are listed as `mc.look.vivid` and its time channels |
 | `/rtx zone define <name> ...` | Creates or replaces a zone |
 | `/rtx zone status` | Each zone's channel, its strength where you stand, and a hint when its profile is missing |
 | `/rtx zone list` | The zone names and their channels |

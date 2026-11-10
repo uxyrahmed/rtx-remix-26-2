@@ -10,6 +10,7 @@ import com.nvidia.rtxremix.minecraft.light.BlockLightIntensityControls;
 import com.nvidia.rtxremix.minecraft.texture.BlockTextureManager;
 import com.nvidia.rtxremix.minecraft.terrain.ChunkManager;
 import com.nvidia.rtxremix.minecraft.light.LightManager;
+import com.nvidia.rtxremix.minecraft.logic.ConfLayerDriver;
 import com.nvidia.rtxremix.minecraft.RemixRenderer;
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
 import com.nvidia.rtxremix.minecraft.sky.SkyRenderer;
@@ -99,6 +100,9 @@ public final class RtxSettingsFactory {
         list.add(unfocusedFramerate());
 
         // --- Sky & time of day ---
+        list.add(RtxSetting.ofBool(RtxOptionFactory.VIVID_LOOK_ID, SettingGroup.SKY,
+                "rtxremix.setting.sky.vividLook", "rtxremix.setting.sky.vividLook.tip",
+                false, ConfLayerDriver::isVividLook, ConfLayerDriver::setVividLook));
         list.add(RtxSetting.ofBool("sky.enabled", SettingGroup.SKY,
                 "rtxremix.setting.sky.enabled", "rtxremix.setting.sky.enabled.tip",
                 RtxRemixMod.isSkyEnabled(), RtxRemixMod::isSkyEnabled,

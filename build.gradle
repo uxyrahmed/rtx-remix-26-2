@@ -8,7 +8,9 @@ import org.apache.tools.ant.filters.ReplaceTokens
 import org.gradle.process.ExecOperations
 
 plugins {
-    id 'fabric-loom' version '1.15.5'
+    // Minecraft 26.1 and later are not obfuscated: this Loom plugin id compiles
+    // against the game's own names and does not remap Minecraft or mods.
+    id 'net.fabricmc.fabric-loom' version '1.19.3'
     id 'java'
 }
 
@@ -127,10 +129,10 @@ repositories {
     }
 }
 
-// Minecraft 1.21.x requires Java 21
+// Minecraft 26.x requires Java 25, for the game and for the Gradle JVM
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
     }
     withSourcesJar()
 }
@@ -145,23 +147,17 @@ sourceSets {
 }
 
 loom {
+    // A class tweaker file (the successor of access wideners); Loom keeps the
+    // access widener name for the setting.
     accessWidenerPath = file("src/main/resources/rtx-remix-renderer.accesswidener")
 
-    // Loom 1.15+ disabled the mixin annotation processor by default. We use
-    // mixins extensively (see src/main/resources/rtx-remix-renderer.mixins.json),
-    // so explicitly opt back into the legacy AP via the `mixin` extension's
-    // useLegacyMixinAp flag. The previous defaultRefmapName setting is no
-    // longer needed. Without it, Loom derives the refmap name from the
-    // project; our mixins.json doesn't reference the refmap by literal name,
-    // so the auto-derived name works fine.
-    mixin {
-        useLegacyMixinAp = true
-    }
+    // No mixin annotation processor or refmap: the game runs with the same
+    // names the mixins are written against, so there is nothing to remap.
 
     runs {
         client {
             // Keep in sync with RECOMMENDED_JVM_ARGS in packaging/installer.ps1.
-            // Minecraft Launcher 1.21.1 defaults for supported Windows arches:
+            // Minecraft Launcher 26.x defaults for supported Windows arches:
             // version metadata supplies HeapDumpPath; the profile supplies G1.
             vmArgs "-Xmx2G", "-XX:+UnlockExperimentalVMOptions", "-XX:+UseG1GC",
                    "-XX:G1NewSizePercent=20", "-XX:G1ReservePercent=20",
@@ -207,8 +203,9 @@ loom {
 // Fabric API (keep in sync with FABRIC_API_VERSION in packaging/installer.ps1,
 // which is what gets installed at runtime on the user's machine). One literal
 // serves both the compile dependency and stageFabricApi.
-def fabricApiCoordinate = "net.fabricmc.fabric-api:fabric-api:0.116.10+1.21.1"
-def fabricLoaderVersion = "0.16.5"
+def minecraftVersion = "26.2"
+def fabricApiCoordinate = "net.fabricmc.fabric-api:fabric-api:0.161.0+26.2"
+def fabricLoaderVersion = "0.20.1"
 
 configurations {
     fabricTestRuntime {
@@ -218,11 +215,11 @@ configurations {
 
 dependencies {
     // Minecraft and Fabric
-    minecraft "com.mojang:minecraft:1.21.1"
-    mappings "net.fabricmc:yarn:1.21.1+build.3:v2"
-    modImplementation "net.fabricmc:fabric-loader:${fabricLoaderVersion}"
+    // Unobfuscated: no mappings, and mods are ordinary dependencies.
+    minecraft "com.mojang:minecraft:${minecraftVersion}"
+    implementation "net.fabricmc:fabric-loader:${fabricLoaderVersion}"
 
-    modImplementation fabricApiCoordinate
+    implementation fabricApiCoordinate
 
     // Testing
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
@@ -242,6 +239,17 @@ def fabricTest = tasks.register('fabricTest', Test) {
         includeTags 'fabric'
     }
     systemProperty 'fabric.side', 'client'
+    // MixinApplicationTest compares the mixins' field initializers with the
+    // transformed classes Mixin exports to .mixin.out in the working directory,
+    // so that directory lives under build/ and starts empty on every run.
+    def fabricTestDir = layout.buildDirectory.dir('fabricTest')
+    workingDir = fabricTestDir
+    systemProperty 'mixin.debug.export', 'true'
+    doFirst {
+        def dir = fabricTestDir.get().asFile
+        new File(dir, '.mixin.out').deleteDir()
+        dir.mkdirs()
+    }
 }
 
 test {
@@ -273,7 +281,7 @@ processResources {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = "UTF-8"
-    options.release = 21
+    options.release = 25
 }
 
 def currentRuntimeArch = System.getProperty("os.arch") == "aarch64" ? "arm64" : "win64"
@@ -459,7 +467,7 @@ tasks.named('classes') {
 }
 
 // A development launcher instance loads mods as a player's install does, so it
-// needs the published intermediary jar, not Loom's remapped copy. A detached,
+// needs the published jar, not Loom's copy on the compile classpath. A detached,
 // non-transitive configuration resolves exactly the pinned coordinate and keeps
 // this task free of the native build and runtime staging.
 tasks.register('stageFabricApi', Copy) {
@@ -510,16 +518,17 @@ jar {
     }
 }
 
-// `build` leaves Loom's remapped lightweight JAR in build/libs for fast dev
-// iteration. packageJar starts with that already-remapped JAR and adds only the
-// selected native payload, writing the distributable JAR to build/distributions.
-// Packaging therefore depends on an explicit task instead of guessing intent
-// from Gradle's command-line task names (`package` versus `:package`).
-def remapJarTask = tasks.named('remapJar')
+// `build` leaves the lightweight JAR in build/libs for fast dev iteration.
+// packageJar starts with that JAR (there is no remapJar on unobfuscated
+// Minecraft) and adds only the selected native payload, writing the
+// distributable JAR to build/distributions. Packaging therefore depends on an
+// explicit task instead of guessing intent from Gradle's command-line task
+// names (`package` versus `:package`).
+def modJarTask = tasks.named('jar')
 def packageJarTask = tasks.register('packageJar', Zip) {
-    description = 'Assembles the remapped distributable JAR with the selected platform SDKs bundled'
+    description = 'Assembles the distributable JAR with the selected platform SDKs bundled'
     group = 'build'
-    dependsOn remapJarTask
+    dependsOn modJarTask
     dependsOn buildArches.collect { fetchRuntimeSdkTasks[it] }
     if (buildArches.contains('win64')) dependsOn 'compileNativeWin64'
     if (buildArches.contains('arm64')) dependsOn 'compileNativeArm64'
@@ -532,7 +541,7 @@ def packageJarTask = tasks.register('packageJar', Zip) {
     preserveFileTimestamps = false
     reproducibleFileOrder = true
 
-    from({ zipTree(remapJarTask.get().archiveFile.get().asFile) })
+    from({ zipTree(modJarTask.get().archiveFile.get().asFile) })
 
     doFirst {
         checkPackageSourceHomogeneity()

@@ -68,12 +68,22 @@ the change never reaches the scene.
 
 **A mixin that cancels vanilla work inherits its side effects.** Preserve the
 net GL, fog, lightmap and framebuffer state the caller expects, not only the
-entry calls. Never cancel `WorldRenderer.render()` itself: that traversal
+entry calls. Never cancel `LevelRenderer.render()` itself: that traversal
 hosts Remix's frame. See [Cancelling Vanilla Render Work](#cancelling-vanilla-render-work).
 
 **Only mixins live in the mixin package.** Mixin reserves that package, and a
 helper class placed there crashes world load. `MixinPackageBoundaryTest` fails
 the build if an unconfigured class appears in it.
+
+**A mixin field initializer can vanish.** Mixin copies a mixin's field
+initializers into the target's constructors, and finds them by their line
+numbers lying outside the constructor body. JDK 25's javac gives an implicit
+constructor's `return` the line of the class's last static initializer, so an
+instance initializer declared above a static one counts as body and is dropped
+without a warning, leaving the field null in game. Assign such a field in an
+`@Inject(method = "<init>", at = @At("RETURN"))` handler, or declare it below
+every static initializer. `MixinApplicationTest` fails when an initializer
+does not reach a target constructor.
 
 **Runtime file changes touch three places at once.** The per-architecture native
 compile tasks, `setupRuntime`, and `package` must agree on what a runtime
@@ -211,25 +221,25 @@ permanent contracts.
 Cancel only draws that Remix replaces, such as terrain layers, particles and
 clouds. Do not bypass the outer vanilla traversal: camera, frustum, matrices,
 framebuffers, tick delta, in-place entity capture, section scheduling, and
-`WorldRenderEvents` all come from it. Judge a cancellation by its injection
+`LevelRenderEvents` all come from it. Judge a cancellation by its injection
 and state correctness, not only a frame-time delta. A GPU-bound run can hide a
 real render-thread saving.
 
 ### Reading Vanilla Bytecode
 
-The Yarn-named merged JAR Loom already caches is enough for `javap`; generating
-all decompiled sources is not necessary. Read the mappings coordinate in
-`build.gradle` and select its exact cache directory. Old versions remain in
-the cache after a mappings bump. The sibling
-`~/.gradle/caches/fabric-loom/<minecraft-version>/minecraft-merged.jar` is the
-obfuscated merge, not the Yarn-named one.
+Minecraft 26.1 and later ship unobfuscated, so the merged JAR Loom caches in
+the checkout already carries the game's own names and is enough for `javap`.
+Loom puts it under `.gradle/loom-cache/minecraftMaven/net/minecraft/` in a
+`minecraft-merged-<hash>` folder whose hash follows the class tweaker, so pick
+the folder for the version `build.gradle` pins. `gradlew genSources` writes
+decompiled sources beside it when you need to read code rather than bytecode.
 
-For the currently pinned mapping, a Git Bash example is:
+For the currently pinned version, a Git Bash example from the repository root
+is:
 
 ```bash
-merged=~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged
-version=1.21.1-net.fabricmc.yarn.1_21_1.1.21.1+build.3-v2
-javap -p -c -classpath "$merged/$version/minecraft-merged-$version.jar" net.minecraft.client.render.VertexConsumer
+merged=$(ls -d .gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-merged-*/26.2 | head -1)
+javap -p -c -classpath "$(ls "$merged"/*-26.2.jar | grep -v sources)" com.mojang.blaze3d.vertex.VertexConsumer
 ```
 
 If you need to search all callers of a descriptor, extract the whole JAR into
@@ -242,7 +252,7 @@ the extraction afterwards. Do not leave thousands of class files in the tree.
 
 `Mixing X from ... into net.minecraft...` in `run/logs/debug.log` proves
 registration, not an applied injection or an executed target. The check reads
-Loom's Yarn-named development client, which `runClient`, Fabric's standard
+Loom's development client, which `runClient`, Fabric's standard
 Gradle task, starts from `run/`. Temporarily add `-Dmixin.debug.export=true` to
 the client `vmArgs` in `build.gradle`, launch `runClient`, and disassemble the
 transformed class under
@@ -254,9 +264,14 @@ An `@Inject` merges a `handler$<id>$rtx-remix-renderer$<handler name>` method
 and a call at the intended offset: `invokespecial` for a private instance
 handler, `invokestatic` for a static one. If the call is present but does not
 fire, investigate vanilla's frustum, dimension, cloud-mode and weather gates.
-Exports and the classes loaded from `build/classes/` use Yarn names. The
-remapped JAR in `build/libs/` instead embeds intermediary `method_NNNNN` names
-in injection annotations. Remove the diagnostic flag and export afterwards.
+Minecraft 26.x is not obfuscated, so the exports, the classes in
+`build/classes/` and the JAR in `build/libs/` all use the names the game runs
+with. Remove the diagnostic flag and export afterwards.
+
+Most of this needs no launch: `fabricTest` exports every transformed class to
+`build/fabricTest/.mixin.out/class/`, and `MixinApplicationTest` loads every
+target there and fails when a mixin does not apply or drops a field
+initializer.
 
 ## Tests
 
@@ -277,7 +292,7 @@ position, are the most useful thing you can attach.
 
 For wrapper changes, the same root Gradle workflow compiles the shim with its
 mod callers and builds the bridge into `build/native/{win64|arm64}/`.
-Visual Studio C++ tools and `JAVA_HOME` pointing to a 64-bit JDK 21 are
+Visual Studio C++ tools and `JAVA_HOME` pointing to a 64-bit JDK 25 are
 required. Gradle fetches the pinned runtime automatically when it is missing.
 Use `.\tools\rtx.bat sdk local --path <runtime dir> --arch win64` for a local build,
 as described in [Getting Started](docs/GETTING_STARTED.md#get-a-runtime).
@@ -376,7 +391,7 @@ runners. [`check`](.github/workflows/check.yml) installs uv and runs
 `tools\rtx.bat check --tests`: Ruff formatting and lint, ty, the Python tests,
 and the public-boundary gate. On a pull request it also scans the commit
 messages from the base SHA to the head SHA.
-[`build`](.github/workflows/build.yml) installs JDK 21 and runs
+[`build`](.github/workflows/build.yml) installs JDK 25 and runs
 `gradlew.bat build test`. Both use read-only repository permissions and no
 secrets, including for fork pull requests. The build fetches the pinned
 runtime from public Packman, so it needs no credentials; never add private

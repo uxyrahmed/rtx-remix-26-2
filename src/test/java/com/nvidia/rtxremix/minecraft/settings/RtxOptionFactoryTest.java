@@ -4,20 +4,21 @@
  */
 package com.nvidia.rtxremix.minecraft.settings;
 
-import net.minecraft.client.option.SimpleOption;
-import net.minecraft.text.TranslatableTextContent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
-import java.lang.reflect.Field;
 import java.util.List;
+import java.util.Optional;
 import java.util.regex.Pattern;
+import net.minecraft.client.OptionInstance;
+import net.minecraft.network.chat.contents.TranslatableContents;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
 
 class RtxOptionFactoryTest {
 
@@ -39,7 +40,7 @@ class RtxOptionFactoryTest {
                 min, max, min, () -> min, v -> { });
     }
 
-    private static SimpleOption<?> toOption(RtxSetting<?> setting) {
+    private static OptionInstance<?> toOption(RtxSetting<?> setting) {
         return RtxOptionFactory.toOption(setting);
     }
 
@@ -52,7 +53,7 @@ class RtxOptionFactoryTest {
         for (RtxSetting.Kind kind : RtxSetting.Kind.values()) {
             // GameOptions is only written when a widget's value changes.
             String message = toOption(settingOf(kind))
-                    .createWidget(null).getMessage().getString();
+                    .createButton(null).getMessage().getString();
 
             assertEquals(1, occurrences(message, LABEL_KEY), kind + " shows \"" + message + "\"");
         }
@@ -66,12 +67,24 @@ class RtxOptionFactoryTest {
     void proceduralCloudToggleUsesCloudStyleNames() {
         assertEquals(
                 "rtxremix.settings.value.procedural",
-                ((TranslatableTextContent) RtxOptionFactory.booleanValueText(
-                        RtxOptionFactory.PROCEDURAL_CLOUDS_ID, true).getContent()).getKey());
+                ((TranslatableContents) RtxOptionFactory.booleanValueText(
+                        RtxOptionFactory.PROCEDURAL_CLOUDS_ID, true).getContents()).getKey());
         assertEquals(
                 "rtxremix.settings.value.classic",
-                ((TranslatableTextContent) RtxOptionFactory.booleanValueText(
-                        RtxOptionFactory.PROCEDURAL_CLOUDS_ID, false).getContent()).getKey());
+                ((TranslatableContents) RtxOptionFactory.booleanValueText(
+                        RtxOptionFactory.PROCEDURAL_CLOUDS_ID, false).getContents()).getKey());
+    }
+
+    @Test
+    void vividLookToggleUsesLookNames() {
+        assertEquals(
+                "rtxremix.settings.value.vivid",
+                ((TranslatableContents) RtxOptionFactory.booleanValueText(
+                        RtxOptionFactory.VIVID_LOOK_ID, true).getContents()).getKey());
+        assertEquals(
+                "rtxremix.settings.value.natural",
+                ((TranslatableContents) RtxOptionFactory.booleanValueText(
+                        RtxOptionFactory.VIVID_LOOK_ID, false).getContents()).getKey());
     }
 
     @Test
@@ -103,10 +116,10 @@ class RtxOptionFactoryTest {
         assertEquals(26, RtxOptionFactory.sliderValueFromInt(framerate, 260));
 
         assertEquals("options.framerateLimit.max",
-                ((TranslatableTextContent) RtxOptionFactory.intValueText(id, 260)
-                        .getContent()).getKey());
-        TranslatableTextContent capped = (TranslatableTextContent)
-                RtxOptionFactory.intValueText(id, 120).getContent();
+                ((TranslatableContents) RtxOptionFactory.intValueText(id, 260)
+                        .getContents()).getKey());
+        TranslatableContents capped = (TranslatableContents)
+                RtxOptionFactory.intValueText(id, 120).getContents();
         assertEquals("options.framerate", capped.getKey());
         assertEquals(120, capped.getArgs()[0]);
     }
@@ -138,21 +151,30 @@ class RtxOptionFactoryTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void deferredIntegerSlidersStillStepOneValueAtATime() {
+        RtxSetting<Integer> integerSetting =
+                RtxSetting.ofInt("t.int", SettingGroup.RENDER_DISTANCE, "k", "k.tip",
+                        0, 10, 5, () -> 5, value -> { })
+                        .deferSliderApply();
+        var callbacks = (OptionInstance.SliderableValueSet<Integer>)
+                sliderCallbacks(toOption(integerSetting));
+
+        assertEquals(Optional.of(6), callbacks.next(5));
+        assertEquals(Optional.of(4), callbacks.previous(5));
+        assertEquals(Optional.of(10), callbacks.next(10));
+    }
+
+    @Test
     void immediateSliderPolicyPreservesTheOriginalCallbacks() {
-        var callbacks = SimpleOption.DoubleSliderCallbacks.INSTANCE;
+        var callbacks = OptionInstance.UnitDouble.INSTANCE;
 
         assertTrue(callbacks.applyValueImmediately());
         assertSame(callbacks, RtxOptionFactory.sliderApplyPolicy(callbacks, true));
     }
 
-    private static SimpleOption.SliderCallbacks<?> sliderCallbacks(SimpleOption<?> option) {
-        try {
-            Field callbacksField = SimpleOption.class.getDeclaredField("callbacks");
-            callbacksField.setAccessible(true);
-            return (SimpleOption.SliderCallbacks<?>) callbacksField.get(option);
-        } catch (ReflectiveOperationException e) {
-            throw new AssertionError("Could not inspect SimpleOption callbacks", e);
-        }
+    private static OptionInstance.SliderableValueSet<?> sliderCallbacks(OptionInstance<?> option) {
+        return (OptionInstance.SliderableValueSet<?>) option.values();
     }
 
     @ParameterizedTest
@@ -193,7 +215,7 @@ class RtxOptionFactoryTest {
     void zeroRendersAsAutoForBothDistanceSliders() {
         for (String id : List.of("dist.entity", "dist.light")) {
             assertEquals("rtxremix.settings.value.auto",
-                    ((TranslatableTextContent) RtxOptionFactory.intValueText(id, 0).getContent()).getKey(), id);
+                    ((TranslatableContents) RtxOptionFactory.intValueText(id, 0).getContents()).getKey(), id);
         }
         assertEquals("7", RtxOptionFactory.intValueText("dist.entity", 7).getString());
         assertEquals("0", RtxOptionFactory.intValueText("light.reach", 0).getString(),

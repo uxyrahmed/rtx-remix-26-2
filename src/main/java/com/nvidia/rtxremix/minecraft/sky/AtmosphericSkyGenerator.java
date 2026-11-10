@@ -4,14 +4,13 @@
  */
 package com.nvidia.rtxremix.minecraft.sky;
 
-import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.opengl.GlStateManager;
 import com.nvidia.rtxremix.minecraft.light.LightManager.SkyLightState;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
-import net.minecraft.client.gl.ShaderProgram;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11;
@@ -33,7 +32,14 @@ import org.lwjgl.opengl.GL44;
  * radiance of the upper hemisphere.
  *
  * <p>Render thread only: it owns GL programs, textures and a readback buffer,
- * and every entry point assumes the GL context is current.
+ * and every entry point assumes the GL context is current, which needs the
+ * OpenGL backend.
+ *
+ * <p>The generator works between Blaze3d's passes with raw GL, so it leaves the
+ * state Blaze3d caches as Blaze3d believes it to be: the program it found is
+ * restored, because the command encoder skips rebinding a program it thinks is
+ * still bound, and the active texture unit changes through
+ * {@link GlStateManager}, which tracks it.
  */
 final class AtmosphericSkyGenerator {
 
@@ -51,8 +57,11 @@ final class AtmosphericSkyGenerator {
     private static final int PASS_SINGLE_SCATTERING = 1;
     private static final int PASS_REDUCE_AND_COMPOSE = 2;
     private static final int READBACK_RING_SIZE = 3;
-    // The render boundary owns texture unit 0 and an unbound pixel-pack buffer;
-    // dedicated units avoid synchronous binding queries on every sky update.
+    /** The shader's SkyParameters block: six std140 vec4s. */
+    private static final int SKY_PARAMETER_BYTES = 6 * 4 * Float.BYTES;
+    // The generator leaves texture unit 0 active and the pixel-pack buffer unbound.
+    // It binds its own textures on units past the twelve GlStateManager caches
+    // bindings for, so they never need restoring or a synchronous binding query.
     private static final int FINAL_SKY_TEXTURE_UNIT = 14;
     private static final int TRANSMITTANCE_TEXTURE_UNIT = 15;
     private static final String SHADER_RESOURCE =
@@ -71,10 +80,10 @@ final class AtmosphericSkyGenerator {
     private final long[] readbackFences =
             new long[READBACK_RING_SIZE];
     private final ByteBuffer skyParameters =
-            BufferUtils.createByteBuffer(5 * 4 * Float.BYTES);
+            BufferUtils.createByteBuffer(SKY_PARAMETER_BYTES);
     /** Last parameter block actually dispatched, for skipping byte-identical regenerations. */
     private final ByteBuffer publishedSkyParameters =
-            BufferUtils.createByteBuffer(5 * 4 * Float.BYTES);
+            BufferUtils.createByteBuffer(SKY_PARAMETER_BYTES);
     private boolean hasPublishedSkyParameters;
     private int readbackWriteIndex;
     private int readbackReadIndex;
@@ -160,6 +169,7 @@ final class AtmosphericSkyGenerator {
     /**
      * Regenerates the atmospheric sky, or skips the work when nothing that feeds it changed.
      *
+     * @param style the art-direction inputs; a new {@link SkyStyle} leaves the sky physical
      * @param publishedOutputValid whether the caller still holds a live texture and dome light
      *     built from a previous call. When false the sky is regenerated regardless of the
      *     parameters, which is what recovers a world rejoin or a dimension whose time never
@@ -171,6 +181,7 @@ final class AtmosphericSkyGenerator {
             SkyLightState lightState,
             float[] upperMean,
             float mieScatteringAnisotropy,
+            SkyStyle style,
             boolean publishedOutputValid) {
         if (upperMean.length < 3) {
             throw new IllegalArgumentException(
@@ -181,6 +192,10 @@ final class AtmosphericSkyGenerator {
                 || mieScatteringAnisotropy >= 1.0f) {
             throw new IllegalArgumentException(
                     "Mie scattering anisotropy must be in [0, 1)");
+        }
+        if (!style.isValid()) {
+            throw new IllegalArgumentException(
+                    "Sky style inputs must be finite and non-negative");
         }
 
         boolean parametersChanged;
@@ -195,7 +210,7 @@ final class AtmosphericSkyGenerator {
             normalize(sunDirection);
             normalize(moonDirection);
             parametersChanged = fillSkyParameters(
-                    lightState, mieScatteringAnisotropy);
+                    lightState, mieScatteringAnisotropy, style);
         }
 
         // The parameters derive from the sky angle, which is tick-quantised, so most frames
@@ -211,25 +226,23 @@ final class AtmosphericSkyGenerator {
             }
         }
 
-        ShaderProgram previousProgram;
+        int previousProgram;
         try (ProfileScope ignored =
                 ProfileScope.begin("Sky.ProceduralGeneration.StateSave")) {
-            previousProgram = RenderSystem.isOnRenderThread()
-                    ? RenderSystem.getShader()
-                    : null;
+            previousProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
         }
         try {
             try (ProfileScope ignored =
                     ProfileScope.begin(
                             "Sky.ProceduralGeneration.Setup")) {
                 GL20.glUseProgram(program);
-                GL13.glActiveTexture(
+                GlStateManager._activeTexture(
                         GL13.GL_TEXTURE0
                                 + TRANSMITTANCE_TEXTURE_UNIT);
                 GL11.glBindTexture(
                         GL11.GL_TEXTURE_2D,
                         transmittanceLut);
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                GlStateManager._activeTexture(GL13.GL_TEXTURE0);
                 bindImages();
                 uploadSkyParameters();
             }
@@ -259,12 +272,8 @@ final class AtmosphericSkyGenerator {
             GL15.glBindBuffer(
                     GL21.GL_PIXEL_PACK_BUFFER,
                     0);
-            GL13.glActiveTexture(GL13.GL_TEXTURE0);
-            if (previousProgram != null) {
-                previousProgram.bind();
-            } else {
-                GL20.glUseProgram(0);
-            }
+            GlStateManager._activeTexture(GL13.GL_TEXTURE0);
+            GL20.glUseProgram(previousProgram);
         }
     }
 
@@ -406,10 +415,11 @@ final class AtmosphericSkyGenerator {
         if (pendingReadbacks == READBACK_RING_SIZE) {
             return;
         }
+        resetPackLayout();
         GL15.glBindBuffer(
                 GL21.GL_PIXEL_PACK_BUFFER,
                 readbackBuffers[readbackWriteIndex]);
-        GL13.glActiveTexture(
+        GlStateManager._activeTexture(
                 GL13.GL_TEXTURE0 + FINAL_SKY_TEXTURE_UNIT);
         GL11.glBindTexture(
                 GL11.GL_TEXTURE_2D,
@@ -424,10 +434,25 @@ final class AtmosphericSkyGenerator {
                 GL32.glFenceSync(
                         GL32.GL_SYNC_GPU_COMMANDS_COMPLETE,
                         0);
-        GL13.glActiveTexture(GL13.GL_TEXTURE0);
+        GlStateManager._activeTexture(GL13.GL_TEXTURE0);
         readbackWriteIndex =
                 (readbackWriteIndex + 1) % READBACK_RING_SIZE;
         pendingReadbacks++;
+    }
+
+    /**
+     * Packs the readback as tightly as the buffers are sized. Blaze3D's
+     * {@code copyTextureToBuffer}, which screenshots use, sets the pack row
+     * length to its source width and leaves it there, and with that row
+     * length the panorama overflows its buffer: the read fails with an
+     * invalid PBO operation and the dome keeps whatever the buffer last held.
+     * Blaze3D sets the row length before each of its own reads, so the GL
+     * defaults set here need no restoring.
+     */
+    private static void resetPackLayout() {
+        GL11.glPixelStorei(GL11.GL_PACK_ROW_LENGTH, 0);
+        GL11.glPixelStorei(GL11.GL_PACK_SKIP_ROWS, 0);
+        GL11.glPixelStorei(GL11.GL_PACK_SKIP_PIXELS, 0);
     }
 
     private void destroyReadbackBuffers() {
@@ -460,7 +485,8 @@ final class AtmosphericSkyGenerator {
      */
     private boolean fillSkyParameters(
             SkyLightState lightState,
-            float mieScatteringAnisotropy) {
+            float mieScatteringAnisotropy,
+            SkyStyle style) {
         putVectorAndScalar(
                 0,
                 sunDirection,
@@ -479,9 +505,13 @@ final class AtmosphericSkyGenerator {
                 lightState.moonSourceRadiance(),
                 0.0f);
         skyParameters.putFloat(64, mieScatteringAnisotropy);
-        skyParameters.putFloat(68, 0.0f);
-        skyParameters.putFloat(72, 0.0f);
-        skyParameters.putFloat(76, 0.0f);
+        skyParameters.putFloat(68, style.ozone);
+        skyParameters.putFloat(72, style.saturation);
+        skyParameters.putFloat(76, style.sunHalo);
+        skyParameters.putFloat(80, style.multipleScattering);
+        skyParameters.putFloat(84, style.auroraStrength);
+        skyParameters.putFloat(88, style.auroraTime);
+        skyParameters.putFloat(92, 0.0f);
 
         return !hasPublishedSkyParameters || skyParameters.mismatch(publishedSkyParameters) >= 0;
     }
